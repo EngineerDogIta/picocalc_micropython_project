@@ -1,34 +1,28 @@
 cmake_minimum_required(VERSION 3.13)
 
-# Include the Pico SDK initialization script
-include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
+# Initialize the Raspberry Pi Pico SDK
+include(pico_sdk_import.cmake)
 
-project(pico_project)
+project(picocalc_hello C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 
-# Initialize the Pico SDK
+# Initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
-
-# Add include directories
-include_directories(${PROJECT_SOURCE_DIR}/include)
 
 # Add source files
 add_executable(${PROJECT_NAME}
-    src/main.cpp
+    src/main.c
 )
 
-# Enable USB stdio and disable UART stdio
+# Enable USB output, disable uart output
 pico_enable_stdio_usb(${PROJECT_NAME} 1)
 pico_enable_stdio_uart(${PROJECT_NAME} 0)
 
-# Link the Pico SDK to your project
-target_link_libraries(${PROJECT_NAME} 
+# Link against libraries
+target_link_libraries(${PROJECT_NAME}
     pico_stdlib
 )
 
-# Create map/bin/hex/uf2 files
-pico_add_extra_outputs(${PROJECT_NAME})
-
-# Add subdirectories for additional components
-add_subdirectory(lib)
-add_subdirectory(tests)
-add_subdirectory(examples) 
+# Create map/bin/hex/uf2 file in addition to ELF.
+pico_add_extra_outputs(${PROJECT_NAME}) 

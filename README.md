@@ -1,90 +1,65 @@
-# Pico Project
+# PicoCalc Hello World
 
-A Raspberry Pi Pico project template with a structured development environment.
-
-## Project Structure
-
-```
-pico_project/
-├── src/           # Source files
-├── include/       # Header files
-├── lib/          # Reusable components
-├── tests/        # Unit tests
-├── examples/     # Example code
-└── docs/         # Documentation
-```
+This is a basic hello world project for the PicoCalc, demonstrating basic functionality of the Raspberry Pi Pico.
 
 ## Prerequisites
 
-- macOS
-- Homebrew
-- CMake (version 3.13 or higher)
-- ARM GCC Toolchain
-- Pico SDK
+- Raspberry Pi Pico SDK
+- CMake (3.13 or higher)
+- Build tools (gcc-arm-none-eabi, make)
 
-## Setup Instructions
+## Building
 
-1. Install required tools:
+1. Set up the Pico SDK environment variable:
+
 ```bash
-brew install cmake gcc-arm-none-eabi
+export PICO_SDK_PATH=/path/to/pico-sdk
 ```
 
-2. Set up Pico SDK:
-```bash
-mkdir -p ~/pico
-cd ~/pico
-git clone -b master https://github.com/raspberrypi/pico-sdk.git
-cd pico-sdk
-git submodule update --init
-```
-
-3. Set environment variable (add to ~/.zshrc):
-```bash
-echo 'export PICO_SDK_PATH=~/pico/pico-sdk' >> ~/.zshrc
-source ~/.zshrc
-```
-
-## Building the Project
+1. Create a build directory and build the project:
 
 ```bash
-mkdir -p build
+mkdir build
 cd build
 cmake ..
 make
 ```
 
-## Flashing to Pico
+## Flashing
 
-1. Hold the BOOTSEL button on the Pico
-2. While holding BOOTSEL, plug the Pico into your Mac
-3. Release BOOTSEL - it should mount as a mass storage device
-4. Copy the generated .uf2 file:
+After building, you'll find the following files in the `build` directory:
+
+- `picocalc_hello.uf2` - The file to flash to your Pico
+- `picocalc_hello.elf` - The ELF binary
+- `picocalc_hello.bin` - The binary file
+- `picocalc_hello.hex` - The hex file
+- `picocalc_hello.map` - The map file
+
+To flash the Pico:
+
+1. Hold down the BOOTSEL button on your Pico
+1. Connect the Pico to your computer via USB
+1. Release the BOOTSEL button
+1. Copy the `picocalc_hello.uf2` file to the RPI-RP2 drive that appears
+
+## Running
+
+After flashing:
+
+1. The Pico will automatically restart
+1. You should see the onboard LED blinking
+1. Connect to the USB serial port to see the "Hello, PicoCalc!" message
+
+## Serial Output
+
+To view the serial output:
+
 ```bash
-cp pico_project.uf2 /Volumes/RPI-RP2/
+screen /dev/ttyACM0 115200
 ```
 
-## Monitoring Output
-
-```bash
-# List available serial devices
-ls /dev/tty.*
-
-# Connect using screen (replace XXXX with your device number)
-screen /dev/tty.usbmodemXXXX 115200
-```
-
-## Development Tips
-
-1. Use VS Code with the following extensions:
-   - C/C++
-   - CMake Tools
-   - Cortex-Debug (for debugging)
-
-2. For debugging:
-   - Set up OpenOCD
-   - Configure VS Code launch.json for Cortex-Debug
-   - Use the SWD interface on the Pico
+(Replace `/dev/ttyACM0` with the correct serial port for your system)
 
 ## License
 
-MIT License 
+MIT License

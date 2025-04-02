@@ -1,0 +1,25 @@
+# Build directory
+build/
+out/
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Compiled files
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.uf2
+*.map
+
+# Dependencies
+vendor/ 

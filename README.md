@@ -1,64 +1,89 @@
-# PicoCalc Hello World
+# PicoCalc Project
 
-This is a basic hello world project for the PicoCalc, demonstrating basic functionality of the Raspberry Pi Pico.
+This project is designed to run on both Raspberry Pi Pico (RP2040) and Pico 2 (RP2350) boards.
 
 ## Prerequisites
 
 - Raspberry Pi Pico SDK
-- CMake (3.13 or higher)
-- Build tools (gcc-arm-none-eabi, make)
+- CMake (version 3.13 or higher)
+- ARM GCC toolchain
+- USB cable for flashing
 
-## Building
+## Building the Project
 
-1. Set up the Pico SDK environment variable:
+### Using the Build Script (Recommended)
+
+The project includes a build script that makes building easier:
 
 ```bash
-export PICO_SDK_PATH=/path/to/pico-sdk
+# Build for Pico 1 (RP2040)
+./build.sh
+
+# Build for Pico 2 (RP2350)
+./build.sh pico2
 ```
 
-1. Create a build directory and build the project:
+### Manual Build
+
+If you prefer to build manually:
 
 ```bash
-mkdir build
+# Create build directory
+mkdir -p build
 cd build
-cmake ..
-make
+
+# Configure for Pico 1
+cmake -DPICO_BOARD=pico ..
+
+# Or configure for Pico 2
+# cmake -DPICO_BOARD=pico2 ..
+
+# Build
+make -j$(nproc)
 ```
 
-## Flashing
+## Flashing the Firmware
 
-After building, you'll find the following files in the `build` directory:
+1. Enter BOOTSEL mode:
+   - Hold the BOOTSEL button
+   - Connect the Pico via USB
+   - Release the BOOTSEL button
 
-- `picocalc_hello.uf2` - The file to flash to your Pico
-- `picocalc_hello.elf` - The ELF binary
-- `picocalc_hello.bin` - The binary file
-- `picocalc_hello.hex` - The hex file
-- `picocalc_hello.map` - The map file
+2. Flash the firmware:
+   ```bash
+   cp build/picocalc_hello.uf2 /media/$USER/RPI-RP2/
+   ```
 
-To flash the Pico:
+3. Running on PicoCalc:
+   - Unplug the Micro-USB cable
+   - Connect via USB Type-C
+   - Press Power On button on top of PicoCalc
 
-1. Hold down the BOOTSEL button on your Pico
-1. Connect the Pico to your computer via USB
-1. Release the BOOTSEL button
-1. Copy the `picocalc_hello.uf2` file to the RPI-RP2 drive that appears
+## Project Structure
 
-## Running
-
-After flashing:
-
-1. The Pico will automatically restart
-1. You should see the onboard LED blinking
-1. Connect to the USB serial port to see the "Hello, PicoCalc!" message
-
-## Serial Output
-
-To view the serial output:
-
-```bash
-screen /dev/ttyACM0 115200
+```
+.
+├── CMakeLists.txt      # Main CMake configuration
+├── build.sh           # Build script
+├── src/               # Source files
+│   └── main.c        # Main application code
+└── build/            # Build output directory
 ```
 
-(Replace `/dev/ttyACM0` with the correct serial port for your system)
+## Development Notes
+
+- The project supports both Pico 1 (RP2040) and Pico 2 (RP2350)
+- USB output is enabled by default
+- UART output is disabled by default
+- The project uses the Pico SDK standard library
+
+## Troubleshooting
+
+If you encounter build issues:
+1. Make sure the Pico SDK is properly installed
+2. Check that your toolchain is correctly set up
+3. Verify you're using the correct board type for your hardware
+4. Check the build output for specific error messages
 
 ## License
 

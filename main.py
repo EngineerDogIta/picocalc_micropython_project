@@ -7,14 +7,19 @@ from lib.ili9486 import ILI9486 as SSD # Use Peter Hinch's driver from lib/
 # SSD.COLOR_INVERT = 0xFFFF # Try enabling color inversion - Disabled based on PicoMite patch analysis
 SSD.COLOR_INVERT = 0 # Explicitly disable inversion
 
-# Pin definitions (Mapping 2 - PicoCalc ILI9488)
+# Pin definitions (Mapping 2 - PicoCalc ILI9488) -> Sticking with these for now, but note patch discrepancy (CS=17, DC=19, RST=20)
+# Trying pins from PicoMite Patch file now
 spi_sck = machine.Pin(10)
 spi_mosi = machine.Pin(11)
 # MISO is not typically used for display-only SPI
-spi_cs = machine.Pin(13, machine.Pin.OUT)
-spi_dc = machine.Pin(14, machine.Pin.OUT)
-spi_rst = machine.Pin(15, machine.Pin.OUT)
+# spi_cs = machine.Pin(13, machine.Pin.OUT)
+# spi_dc = machine.Pin(14, machine.Pin.OUT)
+# spi_rst = machine.Pin(15, machine.Pin.OUT)
+spi_cs = machine.Pin(17, machine.Pin.OUT) # From PicoMite Patch
+spi_dc = machine.Pin(19, machine.Pin.OUT) # From PicoMite Patch
+spi_rst = machine.Pin(20, machine.Pin.OUT) # From PicoMite Patch
 # spi_bl = machine.Pin(12, machine.Pin.OUT) # Removed: PicoMite patch indicates I2C backlight control
+spi_bl = machine.Pin(12, machine.Pin.OUT) # Re-enabled: Maybe still needed as an enable?
 
 # Initialize SPI
 # Using SPI(1) as it commonly uses GP10/GP11 on Pico
@@ -22,11 +27,15 @@ spi_rst = machine.Pin(15, machine.Pin.OUT)
 # Peter Hinch's driver might prefer lower default speeds, let's try 30MHz based on docs.
 # Let's try an even lower speed to see if it stabilizes
 # spi = machine.SPI(1, baudrate=30_000_000, sck=spi_sck, mosi=spi_mosi)
-spi = machine.SPI(1, baudrate=10_000_000, sck=spi_sck, mosi=spi_mosi) # Try 10MHz
+# spi = machine.SPI(1, baudrate=10_000_000, sck=spi_sck, mosi=spi_mosi) # Try 10MHz
+spi = machine.SPI(1, baudrate=10_000_000, sck=spi_sck, mosi=spi_mosi, polarity=0, phase=0) # Try 10MHz, explicitly set mode 0
 
 # Initialize Backlight - Removed: Assuming I2C control based on patch
 # spi_bl.value(1) # Turn backlight on (set high)
 # print("Backlight ON")
+# Initialize Backlight - Re-enabled
+spi_bl.value(1) # Turn backlight on (set high)
+print("Backlight ON (Re-enabled GPIO12)")
 
 # Initialize Display Driver
 # PicoCalc resolution is 480x320
@@ -73,7 +82,7 @@ print("Test complete (filled screen with 0xF800). Script finished.")
 # # Fill screen BLUE
 # print("Fill Blue")
 # # display.fill(ili9488.color565(0, 0, 255))
-# display.fill(COLOR_BLUE)
+# display.fill(COLOR_BLUE) # This would show Red
 # time.sleep(1)
 # 
 # # Clear screen (fill BLACK)
@@ -82,12 +91,8 @@ print("Test complete (filled screen with 0xF800). Script finished.")
 # display.fill(COLOR_BLACK)
 # time.sleep(0.5)
 # 
-# # Draw a yellow rectangle
-# # Note: fill_rect might not be implemented exactly the same way or at all
-# # in this driver without the full nano-gui framework.
-# # Let's try filling the whole screen yellow instead for a simpler test.
+# # Fill Yellow
 # print("Fill Yellow")
-# # display.fill_rect(10, 10, 200, 100, ili9488.color565(255, 255, 0))
 # display.fill(COLOR_YELLOW)
 # time.sleep(2)
 # 

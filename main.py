@@ -1,208 +1,158 @@
-# main.py - Testing ILI9488 initialization based on PicoMite patch
+# main.py - Basic ILI9488 Initialization and Screen Fill for Pico
+# Fills the screen with Cyan color using RGB565 format.
 
 import machine
 import time
 import ustruct # For packing color data
 
-# --- Configuration ---
-LCD_CS_PIN = 13   # Schematic Pin
-LCD_DC_PIN = 14   # Schematic Pin
-LCD_RST_PIN = 15  # Schematic Pin
-LCD_SCK_PIN = 10  # Schematic Pin
-LCD_MOSI_PIN = 11 # Schematic Pin
-LCD_BL_PIN = 12   # Schematic Pin (Backlight)
+# --- Display Configuration ---
+LCD_CS_PIN = 13   # Chip Select
+LCD_DC_PIN = 14   # Data/Command
+LCD_RST_PIN = 15  # Reset
+LCD_SCK_PIN = 10  # SPI Clock
+LCD_MOSI_PIN = 11 # SPI Data Out
+LCD_BL_PIN = 12   # Backlight Control (Active High)
 
-LCD_WIDTH = 320  # Schematic Resolution
-LCD_HEIGHT = 320 # Schematic Resolution
+LCD_WIDTH = 320  # Display width in pixels
+LCD_HEIGHT = 320 # Display height in pixels (Square display)
 
-SPI_BUS = 0 # SPI0 uses GP10/11 as default on Pico if not specified otherwise
-SPI_BAUDRATE = 20_000_000 # Keeping reduced speed
-
-# --- I2C Backlight Control (PicoCalc specific - AW9523B) --- REMOVED
-# I2C_BUS_ID = 0
-# I2C_SDA_PIN = 8
-# I2C_SCL_PIN = 9
-# AW9523B_ADDR = 0x38
-# AW_REG_OUTPUT_P1 = 0x03 # Output Port 1 (Not needed for LED mode setup?)
-# AW_REG_CONF_P1 = 0x13   # Configure Port 1 (Direction: 0=OUT, 1=IN)
-# AW_REG_LED_MODE_P1 = 0x11 # LED Mode Select Port 1 (0=LED, 1=GPIO)
-# AW_REG_DIM_P1_4 = 0x25  # Dimmer for P1.4 (Backlight control pin)
-
-# print(f"Initializing I2C{I2C_BUS_ID} (SDA={I2C_SDA_PIN}, SCL={I2C_SCL_PIN})...")
-# try:
-#     i2c = machine.I2C(I2C_BUS_ID, sda=machine.Pin(I2C_SDA_PIN), scl=machine.Pin(I2C_SCL_PIN))
-#     print("I2C Initialized.")
-#     print(f"Configuring AW9523B (addr {hex(AW9523B_ADDR)}) for backlight...")
-#     val_conf = 0xEF
-#     i2c.writeto_mem(AW9523B_ADDR, AW_REG_CONF_P1, bytes([val_conf]))
-#     print(f"  - Wrote {hex(val_conf)} to REG {hex(AW_REG_CONF_P1)} (Configure P1.4 as OUT)")
-#     val_dim = 0xFF
-#     i2c.writeto_mem(AW9523B_ADDR, AW_REG_DIM_P1_4, bytes([val_dim]))
-#     print(f"  - Wrote {hex(val_dim)} to REG {hex(AW_REG_DIM_P1_4)} (Set P1.4 Brightness Max)")
-#     print("Backlight configuration sent.")
-# except Exception as e:
-#     print(f"ERROR during I2C setup/backlight control: {e}")
+SPI_BUS = 1 # Use SPI1 (matches schematic pins GP10, GP11)
+SPI_BAUDRATE = 20_000_000 # SPI clock frequency
 
 # --- Pin Initialization ---
-spi_cs = machine.Pin(LCD_CS_PIN, machine.Pin.OUT, value=1) # Initialize CS high (inactive)
+# Initialize GPIO pins for controlling the display
+spi_cs = machine.Pin(LCD_CS_PIN, machine.Pin.OUT, value=1) # CS inactive (high)
 spi_dc = machine.Pin(LCD_DC_PIN, machine.Pin.OUT)
 spi_rst = machine.Pin(LCD_RST_PIN, machine.Pin.OUT)
-# SPI pins sck and mosi are configured directly in the SPI constructor
-# Backlight Pin
 lcd_bl = machine.Pin(LCD_BL_PIN, machine.Pin.OUT)
+print("GPIO pins initialized.")
 
-print("Pins initialized (using schematic values)")
-
-# --- Backlight ON --- (Using direct GPIO control)
-print(f"Turning Backlight ON (GP{LCD_BL_PIN})")
+# --- Backlight ON ---
+# Turn on the display backlight
+print(f"Turning Backlight ON (GP{LCD_BL_PIN})...")
 lcd_bl.value(1)
 
 # --- SPI Initialization ---
-# Standard SPI pins for Pico SPI0 are SCK=18, MOSI=19, MISO=16
-# Standard SPI pins for Pico SPI1 are SCK=10, MOSI=11, MISO=8 - SCHEMATIC USES SPI1 PINS!
-# Let's use SPI1 based on SCK=10, MOSI=11 from schematic
-SPI_BUS = 1
+# Configure the SPI peripheral
 spi = machine.SPI(SPI_BUS, baudrate=SPI_BAUDRATE, sck=machine.Pin(LCD_SCK_PIN), mosi=machine.Pin(LCD_MOSI_PIN), polarity=0, phase=0)
-print(f"SPI(bus={SPI_BUS}, baudrate={SPI_BAUDRATE}, sck={LCD_SCK_PIN}, mosi={LCD_MOSI_PIN}) initialized")
+print(f"SPI(bus={SPI_BUS}, baudrate={SPI_BAUDRATE}, sck={LCD_SCK_PIN}, mosi={LCD_MOSI_PIN}) initialized.")
 
-# --- Low-level SPI Send Functions ---
+# --- Low-level SPI Communication Functions ---
 def _wcmd(cmd_byte):
-    """Send a command byte."""
-    spi_dc.value(0)
-    spi_cs.value(0)
+    """Send a command byte to the display controller."""
+    spi_dc.value(0) # Command mode
+    spi_cs.value(0) # Select chip
     spi.write(bytes([cmd_byte]))
-    spi_cs.value(1)
+    spi_cs.value(1) # Deselect chip
 
 def _wdata(data_bytes):
-    """Send a data byte or bytes."""
-    spi_dc.value(1)
-    spi_cs.value(0)
+    """Send a data byte or sequence of bytes to the display controller."""
+    spi_dc.value(1) # Data mode
+    spi_cs.value(0) # Select chip
+    # Ensure data is bytes
     spi.write(data_bytes if isinstance(data_bytes, bytes) else bytes([data_bytes]))
-    spi_cs.value(1)
+    spi_cs.value(1) # Deselect chip
 
 def _wcd(cmd_byte, data_bytes):
-    """Send command then data."""
+    """Send a command byte followed by data byte(s)."""
     _wcmd(cmd_byte)
     _wdata(data_bytes)
 
 # --- Hardware Reset ---
-print("Hardware Reset...")
+# Reset the display controller
+print("Performing hardware reset...")
 spi_rst.value(0)
-time.sleep(0.05) # 50ms
+time.sleep(0.05) # 50ms reset low time
 spi_rst.value(1)
 time.sleep(0.15) # 150ms delay after reset
 
-# --- PicoMite Patch Initialization Sequence ---
-# Based on commands observed in patch diffs and ILI9488 datasheets
-print("Sending Simplified ILI9488 Init Sequence (16-bit RGB565, Portrait 320x320, MADCTL=0x40)...")
+# --- ILI9488 Initialization Sequence ---
+# Send initialization commands based on typical ILI9488 configuration
+# Configured for 320x320 resolution, 16-bit RGB565 color, Portrait mode.
+print("Sending ILI9488 Initialization Sequence...")
 
-# Commands from patch (translated to Python bytes)
-# _wcd(0xF0, 0xC3) # Command Set Control (?) - Enable Extension Command 2 - REMOVED
-# _wcd(0xF0, 0x96) # Command Set Control (?) - Enable Extension Command 3 - REMOVED
+# Key Settings
+_wcd(0x36, 0x40) # MADCTL: Memory Access Control - Portrait (MY=0,MX=1,MV=0), RGB color order
+_wcd(0x3A, 0x55) # COLMOD: Pixel Format Set - 16 bits/pixel (RGB565)
 
-# Key Settings - MODIFIED for Portrait RGB
-_wcd(0x36, 0x40) # MADCTL: Portrait (MY=0,MX=1,MV=0), RGB=0
-_wcd(0x3A, 0x55) # Pixel Format: 16-bit/pixel (RGB565)
+# Interface & Display Control
+_wcd(0xB0, 0x80) # Interface Mode Control - Use default settings
+_wcd(0xB4, 0x00) # Display Inversion Control - Column Inversion (default)
+_wcd(0xB6, bytes([0x80, 0x02, 0x3B])) # Display Function Control - Use common values
+_wcd(0xB7, 0xC6) # Entry Mode Set - Use common values, deep standby OFF
 
-# Other commands found in typical ILI9488 init, potentially relevant from patch context
-_wcd(0xB0, 0x80) # Interface Mode Control
-_wcd(0xB4, 0x00) # Display Inversion Control: Column Inversion (Seems default)
-_wcd(0xB6, bytes([0x80, 0x02, 0x3B])) # Display Function Control: Default Clock Div, Scan Cycle=VSYNC, etc. (Using common values)
-_wcd(0xB7, 0xC6) # Entry Mode Set: Deep standby OFF, ?? - Kept for now
+# Power Controls
+_wcd(0xC0, bytes([0x10, 0x10])) # Power Control 1 - Vreg voltage settings (common)
+_wcd(0xC1, 0x41)               # Power Control 2 - VGH/VGL voltage settings (common)
+_wcd(0xC5, bytes([0x00, 0x18])) # VCOM Control 1 - VCOM voltage settings (common)
 
-# Power Controls (Using generic common values now)
-_wcd(0xC0, bytes([0x10, 0x10])) # Power Control 1 (Vreg1out, Vreg2out) - Common value
-_wcd(0xC1, 0x41)               # Power Control 2 (VGH, VGL) - Common value
-_wcd(0xC5, bytes([0x00, 0x18])) # VCOM Control 1 (VCOMH, VCOM L) - Common value
-
-# Gamma Settings (Using common defaults now)
+# Gamma Settings
 # Positive Gamma Correction
 _wcd(0xE0, bytes([0x0F, 0x1F, 0x1C, 0x0C, 0x0F, 0x08, 0x48, 0x98, 0x37, 0x0A, 0x13, 0x04, 0x11, 0x0D, 0x00]))
 # Negative Gamma Correction
 _wcd(0xE1, bytes([0x0F, 0x32, 0x2E, 0x0B, 0x0D, 0x05, 0x47, 0x75, 0x37, 0x06, 0x10, 0x03, 0x24, 0x20, 0x00]))
 
-# Undocumented/Magic from patch - REMOVED
-# _wcd(0xE8, bytes([0x40, 0x8A, 0x00, 0x00, 0x29, 0x19, 0xAA, 0x33])) # Timing control?
-# _wcd(0xB9, bytes([0x02, 0xE0])) # Unknown/Magic - Maybe panel specific settings
+# Tearing Effect Line OFF
+_wcd(0x35, 0x00)
 
-# Exit Command Set Control? - REMOVED
-# _wcd(0xF0, 0x3C) # Command Set Control (?) - Disable Extension Command 3
-# _wcd(0xF0, 0x69) # Command Set Control (?) - Disable Extension Command 2
+# Exit Sleep Mode
+_wcmd(0x11)      # SLPOUT: Sleep Out
+time.sleep(0.12) # 120ms delay required after SLPOUT
 
-_wcd(0x35, 0x00) # Tearing Effect Line OFF - Kept
-
-_wcmd(0x11)      # Sleep Out (SLPOUT)
-time.sleep(0.12) # 120ms delay required
-
-_wcmd(0x29)      # Display ON (DISPON)
-time.sleep(0.02) # 20ms delay
-
-# _wcmd(0x21)      # Display Inversion ON (INVON) - REMOVED for standard 16-bit test
+# Turn Display ON
+_wcmd(0x29)      # DISPON: Display ON
+time.sleep(0.02) # 20ms delay after DISPON
 
 print("Initialization sequence sent.")
 
-# --- Test: Fill Screen with Red (RGB565) ---
+# --- Test: Fill Screen with Cyan (RGB565) ---
 
-# Define Red in RGB565 format
-# R=31 (11111), G=0 (000000), B=0 (00000)
-# Packed: 11111 000000 00000 = 0xF800
-COLOR_RED_RGB565 = 0xF800
-COLOR_BLACK_RGB565 = 0x0000
-COLOR_WHITE_RGB565 = 0xFFFF
-COLOR_BLUE_RGB565 = 0x001F # R=0, G=0, B=31 (00000 000000 11111)
+# Define Cyan in RGB565 format
+# R=0 (00000), G=63 (111111), B=31 (11111)
+# Packed: 00000 111111 11111 = 0x07FF
+COLOR_CYAN_RGB565 = 0x07FF
 
 # Pack the color into 2 bytes (Big Endian for SPI)
-COLOR_TO_FILL_BYTES = ustruct.pack(">H", COLOR_RED_RGB565)
-# COLOR_TO_FILL_BYTES = ustruct.pack(">H", COLOR_BLACK_RGB565)
-# COLOR_TO_FILL_BYTES = ustruct.pack(">H", COLOR_WHITE_RGB565)
-# COLOR_TO_FILL_BYTES = ustruct.pack(">H", COLOR_BLUE_RGB565)
+COLOR_TO_FILL_BYTES = ustruct.pack(">H", COLOR_CYAN_RGB565)
 
-# Define Black (0,0,0) -> inverted = (0xFF, 0xFF, 0xFF) - REMOVED
-# INV_COLOR_BLACK_BYTES = bytes([0xFF, 0xFF, 0xFF])
-# Define White (0x3F,0x3F,0x3F) -> inverted = (0xC0, 0xC0, 0xC0) - REMOVED
-# INV_COLOR_WHITE_BYTES = bytes([0xC0, 0xC0, 0xC0])
-
-# Set drawing window to full screen
-print("Setting drawing window...")
+# Set drawing window to the full screen area
+print("Setting drawing window to full screen (0,0 to 319,319)...")
 _wcmd(0x2A) # CASET (Column Address Set)
-_wdata(ustruct.pack(">HH", 0, LCD_WIDTH - 1)) # 0 to 319 (Square)
+_wdata(ustruct.pack(">HH", 0, LCD_WIDTH - 1)) # X start = 0, X end = 319
 
 _wcmd(0x2B) # RASET (Row Address Set)
-_wdata(ustruct.pack(">HH", 0, LCD_HEIGHT - 1)) # 0 to 319 (Square)
+_wdata(ustruct.pack(">HH", 0, LCD_HEIGHT - 1)) # Y start = 0, Y end = 319
 
-# Prepare to write pixel data
-pixel_bytes_to_fill = COLOR_TO_FILL_BYTES # Use the 2-byte packed color
-
-print(f"Preparing to fill with RGB565 color: {pixel_bytes_to_fill.hex()}")
+# Prepare for Memory Write command
+print(f"Preparing to fill screen with Cyan (RGB565: {hex(COLOR_CYAN_RGB565)}, Bytes: {COLOR_TO_FILL_BYTES.hex()})...")
 _wcmd(0x2C) # RAMWR (Memory Write)
 
-# Write pixel data for the whole screen
-print("Writing pixel data (this might take a while)...")
+# Start sending pixel data
+print("Writing pixel data...")
 spi_dc.value(1) # Data mode
 spi_cs.value(0) # Chip select active
 
-# Create a buffer for faster transfer
-# Buffer size should be multiple of 2 for 16-bit color
-# Let's use a buffer representing a few pixels, e.g., 128 pixels * 2 bytes/pixel
-buffer_size_pixels = 128
-buffer_size_bytes = buffer_size_pixels * 2
-line_buffer = bytearray(buffer_size_bytes)
+# Use a buffer for potentially faster SPI transfers
+buffer_size_pixels = 128 # Number of pixels per buffer write
+buffer_size_bytes = buffer_size_pixels * 2 # Bytes per buffer (2 bytes/pixel)
+pixel_buffer = bytearray(buffer_size_bytes)
+# Fill the buffer with the target color
 for i in range(0, buffer_size_bytes, 2):
-    line_buffer[i:i+2] = pixel_bytes_to_fill # Fill with 2-byte color
+    pixel_buffer[i:i+2] = COLOR_TO_FILL_BYTES # Fill with 2-byte color
 
 total_pixels = LCD_WIDTH * LCD_HEIGHT
 pixels_sent = 0
+# Loop sending the buffer until the screen is filled
 while pixels_sent < total_pixels:
+    # Calculate how many pixels to send in this chunk
     pixels_to_send = min(buffer_size_pixels, total_pixels - pixels_sent)
-    bytes_to_send = pixels_to_send * 2 # Use 2 bytes per pixel
-    spi.write(line_buffer[:bytes_to_send])
+    bytes_to_send = pixels_to_send * 2
+    # Send the appropriate portion of the buffer
+    spi.write(pixel_buffer[:bytes_to_send])
     pixels_sent += pixels_to_send
-    # Optional progress print
-    # if pixels_sent % (LCD_WIDTH * 10) == 0:
-    #     print(f"  {pixels_sent}/{total_pixels} pixels written...")
 
-
+# Deselect the chip after writing
 spi_cs.value(1) # Chip select inactive
-print("Fill attempt complete.")
+print("Screen fill complete.")
 
-print("\n--- Script Finished ---")
+print("--- Script Finished ---")

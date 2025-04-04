@@ -13,6 +13,10 @@ class Display:
                  width=320, height=320, baudrate=20_000_000):
         self.width = width
         self.height = height
+        # Internal state for scrolling
+        self._vsa_height = height # Assume full screen scroll initially
+        self._current_scroll_line = 0
+
         self.spi_bus_id = spi_bus
         self.baudrate = baudrate
 
@@ -96,6 +100,11 @@ class Display:
         # Turn Display ON
         self._wcmd(0x29)      # DISPON: Display ON
         time.sleep(0.02) # 20ms delay after DISPON
+
+        # Default scroll setup (can be overridden later)
+        # self.define_scroll_area(0, self.height, 0) # Let main.py call this
+        # self.set_scroll_start(0)
+
         print("Initialization sequence sent.")
 
     def backlight_on(self):
@@ -168,4 +177,33 @@ class Display:
         """Fill the entire screen with a specified color."""
         print(f"Filling screen with color {hex(color_rgb565)}...")
         self.fill_rect(0, 0, self.width, self.height, color_rgb565)
-        print("Screen fill complete.") 
+        print("Screen fill complete.")
+
+    # --- Hardware Scrolling Methods ---
+    def define_scroll_area(self, tfa, vsa, bfa):
+        """ Defines the Vertical Scrolling Area (TFA+VSA+BFA = screen height)
+            tfa: Top Fixed Area lines
+            vsa: Vertical Scroll Area lines
+            bfa: Bottom Fixed Area lines
+        """
+        if tfa + vsa + bfa != self.height:
+            raise ValueError("Sum of scroll areas must equal screen height")
+        print(f"Defining scroll area: TFA={tfa}, VSA={vsa}, BFA={bfa}")
+        self._vsa_height = vsa
+        data = ustruct.pack(">HHH", tfa, vsa, bfa)
+        self._wcd(0x33, data)
+
+    def set_scroll_start(self, line):
+        """ Sets the start line for vertical scrolling (VSCSAD) """
+        if self._vsa_height <= 0:
+            print("Warning: Scroll area not defined or VSA is zero.")
+            return
+        line = line % self._vsa_height # Wrap around the scroll area
+        self._current_scroll_line = line
+        # print(f"Setting scroll start line to: {line}") # Debug print
+        data = ustruct.pack(">H", line)
+        self._wcd(0x37, data)
+
+    def get_scroll_start(self):
+        """ Returns the internally tracked current scroll line """
+        return self._current_scroll_line 

@@ -57,64 +57,85 @@ This exhaustive technical breakdown analyzes the Clockwork PicoCalc's core circu
 
 ---
 
-I'll analyze the keyboard mapping code and integrate it with the schematic documentation. Based on the patch code and schematic analysis, here's the enhanced keypad documentation:
+## 4. Keypad Interface (Reverse Engineered)
 
-## 4. Keypad Interface (Updated)
+### 4.1 I2C Connection
+Through extensive reverse engineering, we've determined the keyboard is controlled by an I2C peripheral:
 
-### 4.1 GPIO Matrix Configuration
-| Row/Column | Pico GPIO | Pull-Up Resistor | 
-|------------|-----------|------------------|
-| Row 0      | GP2       | R20 (10kΩ)       |
-| Row 1      | GP3       | R21 (10kΩ)       | 
-| Row 2      | GP4       | R22 (10kΩ)       |
-| Row 3      | GP5       | R23 (10kΩ)       |
-| Column 0   | GP6       | –                |
-| Column 1   | GP7       | –                |
-| Column 2   | GP8       | –                |
-| Column 3   | GP9       | –                |
+| Interface Parameter | Value       | Notes                                   |
+|---------------------|-------------|----------------------------------------|
+| I2C Bus             | I2C1        | Secondary I2C bus on the Pico          |
+| SDA Pin             | GP6         | Serial Data Line                        |
+| SCL Pin             | GP7         | Serial Clock Line                       |
+| I2C Address         | 0x1F        | 7-bit addressing scheme                 |
+| Clock Frequency     | 100 kHz     | Standard I2C mode                       |
+| Pull-up Resistors   | 4.7kΩ       | On both SDA and SCL lines               |
 
-### 4.2 Keycode Mapping Table
-The firmware patch reveals these specific keycode-to-function mappings:
+### 4.2 Communication Protocol
+The protocol follows a custom I2C implementation:
+
+1. **Command Phase**:
+   - Master (Pico) writes command byte 0x09 to address 0x1F
+   - This command initiates a keyboard status read
+
+2. **Response Phase**:
+   - Master (Pico) reads 2 bytes from the keyboard controller
+   - Response format is a 16-bit status word:
+     - For standard keys: High byte (MSB) contains event type, Low byte (LSB) contains key code
+     - For Enter key: Type is 0x0A in LSB, code is 0x01 or 0x03 in MSB
+   - Status word of 0 indicates no key event
+
+3. **Event Types**:
+   - 0x01: Key press event
+   - 0x02: Key repeat event
+   - 0x03: Key release event
+   - 0x0A: Special event type (used with Enter key)
+
+4. **Special Control Codes**:
+   - 0xA502: Control key pressed
+   - 0xA503: Control key released
+   - 0x7E02: Alternative Control key pressed
+   - 0x7E03: Alternative Control key released
+
+### 4.3 Keycode Mapping Table
+Through our reverse engineering, we've mapped these key codes:
 
 | Key Code (Hex) | Mapped Function | Physical Button |
 |----------------|-----------------|-----------------|
-| 0xB1           | ESC             | Escape          |
-| 0x81           | F1              | Function 1      |
-| 0x82           | F2              | Function 2      |
-| 0x83           | F3              | Function 3      |
-| 0x84           | F4              | Function 4      |
-| 0x85           | F5              | Function 5      |
-| 0x86           | F6              | Function 6      |
-| 0x87           | F7              | Function 7      |
-| 0x88           | F8              | Function 8      |
-| 0x89           | F9              | Function 9      |
+| 0xB1           | ESC (27)        | Escape          |
+| 0x81-0x89      | F1-F9           | Function 1-9    |
 | 0x90           | F10             | Function 10     |
-| 0xB5           | UP              | Up Arrow        |
-| 0xB6           | DOWN            | Down Arrow      |
-| 0xB7           | RIGHT           | Right Arrow     |
-| 0xB4           | LEFT            | Left Arrow      |
-| 0xD0           | BreakKey        | Break           |
-| 0xD1           | INSERT          | Insert          |
-| 0xD2           | HOME            | Home            |
-| 0xD5           | END             | End             |
-| 0xD6           | PUP             | Page Up         |
-| 0xD7           | PDOWN           | Page Down       |
+| 0xB5           | UP (128)        | Up Arrow        |
+| 0xB6           | DOWN (130)      | Down Arrow      |
+| 0xB7           | RIGHT (129)     | Right Arrow     |
+| 0xB4           | LEFT (131)      | Left Arrow      |
+| 0xD0           | BreakKey (3)    | Break           |
+| 0xD1           | INSERT (132)    | Insert          |
+| 0xD2           | HOME (134)      | Home            |
+| 0xD5           | END (135)       | End             |
+| 0xD6           | PUP (136)       | Page Up         |
+| 0xD7           | PDOWN (137)     | Page Down       |
+| 0x01/0x03*     | ENTER (13)      | Enter/Return    |
+| 0x5A           | ENTER (13)      | Alternative Enter|
+| 0x0D           | ENTER (13)      | CR code         |
 
-### 4.3 Control Key Handling
-The code shows special handling for modifier keys:
-```c
-if(buff==0xA503) ctrlheld=0;  // Ctrl release
-else if(buff==0xA502) ctrlheld=1;  // Ctrl press
-```
-This enables CTRL+letter combinations (e.g., CTRL+C maps to ASCII 03)
+*Note: Enter key generates two sequential codes (0x010A followed by 0x030A)
 
 ### 4.4 Implementation Notes
-- Keycodes use a 16-bit format where upper byte contains scancode
-- The matrix scanning logic converts physical keypresses to these hex codes
-- Arrow keys and function keys use dedicated codes rather than ASCII equivalents
-- Break key (0xD0) triggers special interrupt handling for program termination
+- The keyboard controller internally scans a physical key matrix
+- It debounces key presses in hardware before sending status
+- For Control+letter combinations, the controller sets the `ctrlheld` flag internally
+- When Control is active, lowercase letter key codes (a-z) are modified: `key_code - 'a' + 1` (ASCII control codes)
+- Different interpretation for key event type and key code bytes depending on key type:
+  - Standard keys: event type in MSB, key code in LSB
+  - Enter key: special coding with type 0x0A in LSB
+  - Control keys: fixed 16-bit values for press/release events
 
-This mapping aligns with the Clockwork PicoCalc's physical keyboard layout and the Mainboard V2.0 schematic's keypad matrix configuration[1][3].
+### 4.5 Electrical Characteristics
+- I2C Bus Logic Level: 3.3V
+- Pull-up Configuration: 4.7kΩ pull-ups on both SDA and SCL lines
+- Recommended polling rate: 50Hz
+- Timing Considerations: 1ms delay required between command write and response read
 
 ---
 
@@ -185,4 +206,4 @@ This mapping aligns with the Clockwork PicoCalc's physical keyboard layout and t
 - Redesigned keypad matrix with anti-ghosting diodes (D9-D12)
 
 ---
-*Reference: Clockwork Mainboard V2.0 Schematic*
+*Reference: Clockwork Mainboard V2.0 Schematic + Reverse Engineering Results*

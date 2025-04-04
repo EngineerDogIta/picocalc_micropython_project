@@ -1,6 +1,7 @@
 # test_fast_terminal.py - Test script for the optimized FastTerminal
 from display.ili9488 import Display
 from fast_terminal import FastTerminal
+import time
 
 def test_fast_terminal():
     # Initialize display with the same pins as in test_terminal.py
@@ -26,46 +27,46 @@ def test_fast_terminal():
     print("Testing basic input...")
     test_string = "Hello, World!"
     
-    # time_ms the basic input
-    start_time_ms = time_ms.time_ms()
+    # Time the basic input
+    start_time = time.time()
     for char in test_string:
         terminal.handle_char(char)
-        time_ms.sleep(0.05)  # Slowed down for visibility
+        time.sleep(0.05)  # Slowed down for visibility
         
     terminal.handle_char('\n')
-    elapsed = (time_ms.time_ms() - start_time_ms) * 1000
+    elapsed = (time.time() - start_time) * 1000
     print(f"Basic input completed in {elapsed:.2f}ms")
-    time_ms.sleep(0.5)
+    time.sleep(0.5)
     
     # Test scrolling with timing
     print("Testing optimized scrolling...")
     total_lines = 40
-    scroll_start_time_ms = time_ms.time_ms()
+    scroll_start_time = time.time()
     
     for i in range(total_lines):
         line = f"Line {i+1}: Testing optimized hardware scroll"
-        line_start = time_ms.time_ms()
+        line_start = time.time()
         
         for char in line:
             terminal.handle_char(char)
-            time_ms.sleep(0.01)  # Faster typing for demonstration
+            time.sleep(0.01)  # Faster typing for demonstration
             
         terminal.handle_char('\n')
         
-        line_elapsed = (time_ms.time_ms() - line_start) * 1000
+        line_elapsed = (time.time() - line_start) * 1000
         print(f"Line {i+1} completed in {line_elapsed:.2f}ms")
-        time_ms.sleep(0.1)  # Brief pause between lines
+        time.sleep(0.1)  # Brief pause between lines
     
-    scroll_elapsed = (time_ms.time_ms() - scroll_start_time_ms) * 1000
+    scroll_elapsed = (time.time() - scroll_start_time) * 1000
     print(f"Scroll test completed in {scroll_elapsed:.2f}ms")
-    print(f"Average time_ms per line: {scroll_elapsed / total_lines:.2f}ms")
+    print(f"Average time per line: {scroll_elapsed / total_lines:.2f}ms")
     
     # Test rapid scrolling (no char-by-char input)
     print("Testing rapid scrolling...")
     
     # Clear terminal
     terminal.clear()
-    time_ms.sleep(1)
+    time.sleep(1)
     
     # Add some content first
     for i in range(5):
@@ -75,7 +76,7 @@ def test_fast_terminal():
         terminal.handle_char('\n')
     
     # Now do rapid scrolling
-    rapid_start_time_ms = time_ms.time_ms()
+    rapid_start_time = time.time()
     rapid_lines = 20
     
     for i in range(rapid_lines):
@@ -85,9 +86,9 @@ def test_fast_terminal():
         terminal.handle_char('\n')
         # No delay between lines for maximum speed test
     
-    rapid_elapsed = (time_ms.time_ms() - rapid_start_time_ms) * 1000
+    rapid_elapsed = (time.time() - rapid_start_time) * 1000
     print(f"Rapid scroll test: {rapid_lines} lines in {rapid_elapsed:.2f}ms")
-    print(f"Average time_ms per rapid line: {rapid_elapsed / rapid_lines:.2f}ms")
+    print(f"Average time per rapid line: {rapid_elapsed / rapid_lines:.2f}ms")
     
     print("Test complete!")
 

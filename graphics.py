@@ -1,6 +1,25 @@
 # pico_project/graphics.py - Basic Graphics Drawing Functions
 
-import ustruct
+# Handle import differences between MicroPython and standard Python
+try:
+    import ustruct as struct
+except ImportError:
+    try:
+        import struct
+    except ImportError:
+        # If neither is available, provide a fallback
+        print("Warning: Neither ustruct nor struct modules available!")
+        # Define a minimal struct implementation for RGB565 color packing
+        class MinimalStruct:
+            @staticmethod
+            def pack(fmt, value):
+                # Very basic implementation for RGB565 format only
+                if fmt == ">H" and isinstance(value, int):
+                    # Big-endian 16-bit unsigned
+                    return bytes([(value >> 8) & 0xFF, value & 0xFF])
+                raise ValueError("Unsupported format in minimal struct implementation")
+        struct = MinimalStruct()
+
 import font # Import the font definitions
 
 # Screen and Font Dimensions (Pixel-based)
@@ -11,9 +30,14 @@ CHAR_HEIGHT_PX = font.FONT_HEIGHT
 SCREEN_CHAR_WIDTH = SCREEN_WIDTH_PX // CHAR_WIDTH_PX # 40
 SCREEN_CHAR_HEIGHT = SCREEN_HEIGHT_PX // CHAR_HEIGHT_PX # 40
 
+# --- Performance Optimization Constants ---
+# Larger buffer for batch operations
+MAX_BATCH_PIXELS = 1024  # Adjust based on available memory
+BATCH_ENABLED = True     # Can be toggled if needed
+
 # Pre-pack common colors if needed, or do it dynamically
-# COLOR_BLACK_BYTES = ustruct.pack(">H", 0x0000)
-# COLOR_WHITE_BYTES = ustruct.pack(">H", 0xFFFF)
+# COLOR_BLACK_BYTES = struct.pack(">H", 0x0000)
+# COLOR_WHITE_BYTES = struct.pack(">H", 0xFFFF)
 
 def draw_char(display, char, x_pixel, y_pixel, fg_color_rgb565, bg_color_rgb565):
     """
@@ -31,8 +55,8 @@ def draw_char(display, char, x_pixel, y_pixel, fg_color_rgb565, bg_color_rgb565)
     char_bytes = font.get_char_bytes(char)
 
     # Pack colors into 2-byte big-endian format
-    fg_bytes = ustruct.pack(">H", fg_color_rgb565)
-    bg_bytes = ustruct.pack(">H", bg_color_rgb565)
+    fg_bytes = struct.pack(">H", fg_color_rgb565)
+    bg_bytes = struct.pack(">H", bg_color_rgb565)
 
     # Create a buffer for the 8x8 pixel data (64 pixels * 2 bytes/pixel = 128 bytes)
     pixel_buffer = bytearray(font.FONT_WIDTH * font.FONT_HEIGHT * 2)
@@ -57,6 +81,67 @@ def draw_char(display, char, x_pixel, y_pixel, fg_color_rgb565, bg_color_rgb565)
 
     # Write the prepared pixel buffer to the display
     display.write_pixels(pixel_buffer)
+
+def draw_char_batch(display, chars, positions, fg_color_rgb565, bg_color_rgb565):
+    """
+    Batch draws multiple characters with a single window set and SPI transaction.
+    
+    Args:
+        display: The initialized Display object
+        chars: List of characters to draw
+        positions: List of (x,y) tuples for character positions
+        fg_color_rgb565: Foreground color
+        bg_color_rgb565: Background color
+    """
+    if not chars:
+        return
+        
+    # Find the bounding rectangle for all characters
+    min_x = min(pos[0] for pos in positions)
+    min_y = min(pos[1] for pos in positions)
+    max_x = max(pos[0] + CHAR_WIDTH_PX - 1 for pos in positions)
+    max_y = max(pos[1] + CHAR_HEIGHT_PX - 1 for pos in positions)
+    
+    # Calculate rectangle width and height
+    width = max_x - min_x + 1
+    height = max_y - min_y + 1
+    
+    # Create a buffer for the entire area
+    buffer_size = width * height * 2
+    
+    # If buffer would be too large, fall back to individual drawing
+    if buffer_size > MAX_BATCH_PIXELS * 2 or not BATCH_ENABLED:
+        for char, pos in zip(chars, positions):
+            draw_char(display, char, pos[0], pos[1], fg_color_rgb565, bg_color_rgb565)
+        return
+    
+    # Create background buffer filled with background color
+    bg_bytes = struct.pack(">H", bg_color_rgb565)
+    fg_bytes = struct.pack(">H", fg_color_rgb565)
+    
+    # Fill entire area with background color first
+    buffer = bytearray(buffer_size)
+    for i in range(0, buffer_size, 2):
+        buffer[i:i+2] = bg_bytes
+    
+    # Draw each character into the buffer
+    for char, (x, y) in zip(chars, positions):
+        char_bytes = font.get_char_bytes(char)
+        rel_x = x - min_x
+        rel_y = y - min_y
+        
+        for row_idx, row_byte in enumerate(char_bytes):
+            for col_bit in range(CHAR_WIDTH_PX - 1, -1, -1):
+                if (row_byte >> col_bit) & 1:
+                    # Calculate position in buffer
+                    buffer_x = rel_x + (CHAR_WIDTH_PX - 1 - col_bit)
+                    buffer_y = rel_y + row_idx
+                    buffer_pos = (buffer_y * width + buffer_x) * 2
+                    buffer[buffer_pos:buffer_pos+2] = fg_bytes
+    
+    # Set the window for the entire area and send the buffer
+    display.set_window(min_x, min_y, max_x, max_y)
+    display.write_pixels(buffer)
 
 def clear_rect(display, x_pixel, y_pixel, width_px, height_px, color_rgb565):
     """
@@ -84,57 +169,127 @@ def clear_rect(display, x_pixel, y_pixel, width_px, height_px, color_rgb565):
                        y_pixel + height_px - 1)
 
     # Prepare the color buffer for a single pixel
-    color_bytes = ustruct.pack(">H", color_rgb565)
+    color_bytes = struct.pack(">H", color_rgb565)
 
     # Calculate the total number of pixels
     num_pixels = width_px * height_px
 
-    # Create a buffer for one row or a chunk at a time to avoid large allocations
-    # Let's send pixel data pixel by pixel for simplicity here,
-    # although buffering might be faster if memory allows.
-    # Optimization: Create a buffer for the color data and write it repeatedly
-    # For maximum memory efficiency on Pico, write pixel by pixel if needed.
-    # display.write_pixels() likely expects a buffer, so let's prepare a small one.
+    # Optimize: Use maximum buffer size that fits in memory
+    # This drastically reduces the number of SPI transactions
+    pixels_per_chunk = min(num_pixels, MAX_BATCH_PIXELS)
+    chunk_buffer = bytearray(pixels_per_chunk * 2)
+    
+    # Fill the buffer with the color
+    for i in range(0, len(chunk_buffer), 2):
+        chunk_buffer[i:i+2] = color_bytes
+    
+    # Send the buffer in chunks
+    pixels_remaining = num_pixels
+    while pixels_remaining > 0:
+        chunk_size = min(pixels_remaining, pixels_per_chunk)
+        # Only need to send the relevant portion of the buffer
+        display.write_pixels(chunk_buffer[:chunk_size*2])
+        pixels_remaining -= chunk_size
 
-    # Simple approach: Write color for each pixel (less efficient but simple)
-    # This might be slow. A buffered approach is better.
-    # Let's try writing the color bytes repeatedly using write_pixels.
-    # write_pixels takes a buffer. We can send the same 2-byte color buffer many times.
-    # However, the underlying driver might expect a buffer containing all pixel data.
-    # Let's check ili9488.py or assume write_pixels can handle repeated small writes
-    # if display._write exists or similar low-level function.
-    # If write_pixels needs the full buffer:
-    # chunk_size = 512 # bytes, adjust based on memory
-    # full_buffer_size = num_pixels * 2
-    # ... logic to fill and send chunks ...
+def draw_string(display, text, x_pixel, y_pixel, fg_color_rgb565, bg_color_rgb565):
+    """
+    Draws a string of text using optimized batch operations when possible.
+    """
+    if not text:
+        return
+        
+    if BATCH_ENABLED:
+        # Prepare character and position lists for batch operation
+        chars = list(text)
+        positions = [(x_pixel + i * CHAR_WIDTH_PX, y_pixel) for i in range(len(text))]
+        draw_char_batch(display, chars, positions, fg_color_rgb565, bg_color_rgb565)
+    else:
+        # Fall back to character-by-character drawing
+        current_x = x_pixel
+        for char in text:
+            draw_char(display, char, current_x, y_pixel, fg_color_rgb565, bg_color_rgb565)
+            current_x += CHAR_WIDTH_PX
 
-    # Alternative: Use display.fill_rect if available, otherwise implement manually.
-    # Assuming fill_rect is not standard, we implement via set_window + write_pixels.
+def clear_screen(display, color_rgb565):
+    """
+    Clears the entire screen with a color using optimal SPI transfers.
+    """
+    display.fill_screen(color_rgb565)
 
-    # Prepare a buffer for a single row might be a good compromise
-    row_buffer_size = width_px * 2 # bytes per row
-    if row_buffer_size > 0:
-        row_buffer = bytearray(width_px * 2)
-        for i in range(0, width_px * 2, 2):
-            row_buffer[i:i+2] = color_bytes
+def optimized_scroll(display, buffer, start_row, num_rows, fg_color_rgb565, bg_color_rgb565):
+    """
+    Optimized scrolling that:
+    1. Uses hardware scrolling when available
+    2. Only redraws the newly exposed area (not the entire screen)
+    3. Batches character drawing operations
+    
+    Args:
+        display: The display object
+        buffer: 2D character buffer (list of lists)
+        start_row: Starting row to display
+        num_rows: Number of rows to display
+        fg_color_rgb565: Text color
+        bg_color_rgb565: Background color
+    """
+    # First try hardware scrolling
+    try:
+        # If available in the display driver
+        if hasattr(display, 'hardware_scroll'):
+            scroll_lines = start_row * CHAR_HEIGHT_PX
+            display.hardware_scroll(scroll_lines)
+            # Only need to redraw the newly exposed line at the bottom
+            bottom_row = min(start_row + num_rows - 1, len(buffer) - 1)
+            
+            # Batch draw the bottom line
+            chars = buffer[bottom_row]
+            positions = [(col * CHAR_WIDTH_PX, bottom_row * CHAR_HEIGHT_PX) 
+                         for col in range(len(chars))]
+            draw_char_batch(display, chars, positions, fg_color_rgb565, bg_color_rgb565)
+            return True
+    except Exception as e:
+        # Fall back to software scrolling
+        pass
+        
+    # Software scrolling with batch operations
+    visible_rows = buffer[start_row:start_row + num_rows]
+    
+    # Batch all characters in the visible area
+    all_chars = []
+    all_positions = []
+    
+    for row_idx, row in enumerate(visible_rows):
+        for col_idx, char in enumerate(row):
+            all_chars.append(char)
+            x = col_idx * CHAR_WIDTH_PX
+            y = row_idx * CHAR_HEIGHT_PX
+            all_positions.append((x, y))
+            
+    # Clear screen
+    clear_screen(display, bg_color_rgb565)
+    
+    # Draw all characters in one batch operation
+    draw_char_batch(display, all_chars, all_positions, fg_color_rgb565, bg_color_rgb565)
+    return True
 
-        # Write the row buffer repeatedly for each row
-        for _ in range(height_px):
-            display.write_pixels(row_buffer)
-    # else: handle zero width/height if necessary
+# Row-based display drawing (more efficient than character-by-character)
+def draw_rows(display, buffer, start_row, num_rows, fg_color_rgb565, bg_color_rgb565):
+    """
+    Draws multiple rows from the buffer, optimizing by drawing entire rows at once.
+    
+    Much faster than character-by-character updates for scrolling operations.
+    """
+    for row_idx in range(num_rows):
+        buffer_row = start_row + row_idx
+        if buffer_row >= len(buffer):
+            break
+            
+        # Draw an entire row in one batch operation
+        y_pos = row_idx * CHAR_HEIGHT_PX
+        draw_string(display, ''.join(buffer[buffer_row]), 0, y_pos, 
+                   fg_color_rgb565, bg_color_rgb565)
 
 # --- Removing scroll_up placeholder, scrolling handled in main.py via buffer ---
 # def scroll_up(display, num_lines, bg_color_rgb565):
 #     ...
 
-# --- Optional Helper Functions (Can be added later) ---
-
-def draw_string(display, text, x_pixel, y_pixel, fg_color_rgb565, bg_color_rgb565):
-    current_x = x_pixel
-    for char in text:
-        # Need to import font if not already globally available in this scope
-        draw_char(display, char, current_x, y_pixel, fg_color_rgb565, bg_color_rgb565)
-        current_x += font.FONT_WIDTH # Assuming font is imported and FONT_WIDTH is accessible
-
-def clear_screen(display, color_rgb565):
-    display.fill_screen(color_rgb565) 
+# --- Optional Helper Functions (Can be added later) --- 

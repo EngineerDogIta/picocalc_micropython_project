@@ -1,295 +1,413 @@
 """
-PicoCalc Keyboard Interface
+PicoCalc Keyboard Interface (MicroPython)
 
-This module provides an interface for communicating with the STM32F103-based
-keyboard controller on the PicoCalc.
-
-Based on analysis of the official firmware, the keyboard controller uses a
-6x6 matrix connected directly to the STM32, which then communicates with the
-Raspberry Pi Pico.
-
-This implementation focuses on establishing the correct communication channel
-with the STM32 controller.
+This module provides an interface for communicating with the PicoCalc's
+custom I2C keyboard controller (Address 0x1F) using MicroPython's
+`machine.I2C` module.
 """
-import machine
 import time
+import machine
 
-# Possible communication pins between Pico and STM32
-# Default SPI0 pins seem to be working based on initial test
-COMMUNICATION_PINS = {
-    'spi': {'sck': 2, 'mosi': 3, 'miso': 4, 'cs': 5},  # SPI0 default pins
-    # Other modes removed for focused testing
-}
+# PicoCalc Keyboard Specifics
+PICOCALC_I2C_ADDR = 0x1F
+PICOCALC_CMD_READ_STATUS = 0x09
 
-# Keycodes and modifiers (Placeholders)
-KEY_ENTER = 0x0D # Example
-KEY_BACKSPACE = 0x08 # Example
-KEY_ESCAPE = 0x1B # Example
-KEY_TAB = 0x09 # Example
+# MMBasic Internal Key Codes (Derived from standard MMBasic & I2C.c switch)
+ESC = 0x1B      # 27
+BreakKey = 0x03 # 3 (Ctrl+C)
+UP = 128
+RIGHT = 129
+DOWN = 130
+LEFT = 131
+INSERT = 132
+DEL = 133       # Note: DEL not in the I2C.c switch, but standard MMBasic
+HOME = 134
+END = 135
+PUP = 136       # Page Up
+PDOWN = 137     # Page Down
+F1 = 138
+F2 = 139
+F3 = 140
+F4 = 141
+F5 = 142
+F6 = 143
+F7 = 144
+F8 = 145
+F9 = 146
+F10 = 147
+F11 = 148      # Note: F11 not in the I2C.c switch
+F12 = 149      # Note: F12 not in the I2C.c switch
 
-# Buffers for SPI communication
-spi_write_buf = bytearray(1)
-spi_read_buf = bytearray(1)
+# Command buffer for writing
+_CMD_BUF = bytearray([PICOCALC_CMD_READ_STATUS])
 
-class KeyboardController:
-    """Interface for communicating with the STM32 keyboard controller (SPI Focus)"""
-    
-    def __init__(self, mode='spi'): # Defaulting to SPI for now
-        """Initialize the keyboard controller interface (SPI only)"""
-        self.mode = mode
-        self.interface = None
-        self.cs = None # Store SPI CS pin if used
-        self.last_key_byte = None
-        self.key_buffer = []
-        
-        # Initialize the interface based on the selected mode
-        try:
-            if mode == 'spi':
-                self._init_spi()
-            else:
-                # Only SPI is supported in this focused version
-                raise ValueError(f"Invalid mode: {mode}. Only 'spi' is supported.")
-            
-            print(f"Keyboard controller initialized in {self.mode} mode")
-            
-            # Test communication immediately after init
-            if not self._test_communication():
-                 print("Warning: Initial communication test failed.")
-                 
-        except Exception as e:
-            print(f"Error during keyboard controller initialization: {e}")
-            self.mode = 'failed' # Set mode to failed on error
-            raise # Re-raise the exception so caller knows init failed
-    
-    def _init_spi(self):
-        """Initialize SPI communication with the STM32"""
-        sck_pin_num = COMMUNICATION_PINS['spi']['sck']
-        mosi_pin_num = COMMUNICATION_PINS['spi']['mosi']
-        miso_pin_num = COMMUNICATION_PINS['spi']['miso']
-        cs_pin_num = COMMUNICATION_PINS['spi']['cs']
-        
-        self.cs = machine.Pin(cs_pin_num, machine.Pin.OUT)
-        self.cs.value(1)  # Deselect by default
-        
-        self.interface = machine.SPI(0,
-                                    baudrate=1000000,
-                                    polarity=0,
-                                    phase=0,
-                                    sck=machine.Pin(sck_pin_num),
-                                    mosi=machine.Pin(mosi_pin_num),
-                                    miso=machine.Pin(miso_pin_num))
-        self.mode = 'spi' # Set mode explicitly
-    
-    def _test_communication(self):
-        """Test SPI communication using write_readinto"""
-        if not (self.mode == 'spi' and isinstance(self.interface, machine.SPI) and self.cs is not None):
-             print("Test communication skipped: SPI not initialized correctly")
-             return False
-             
-        try:
-            # Prepare buffer to write (e.g., sending 0x00)
-            spi_write_buf[0] = 0x00 
-            # Prepare buffer to read into
-            spi_read_buf[0] = 0xFF # Clear read buffer
-            
-            self.cs.value(0) # Select
-            time.sleep(0.001)
-            # Write one byte while reading one byte
-            self.interface.write_readinto(spi_write_buf, spi_read_buf)
-            time.sleep(0.001)
-            self.cs.value(1) # Deselect
-            
-            # Basic test: Did we receive *something* (even 0xFF is okay here)?
-            # We just want to know if the transaction completed without error.
-            # print(f"DEBUG: Test read byte: 0x{spi_read_buf[0]:02X}") # Optional debug
-            return True # Assume success if no exception
-        except Exception as e_spi:
-            print(f"SPI communication test failed: {e_spi}")
-            # Ensure CS is released on error
-            if self.cs is not None:
-                 self.cs.value(1)
-            return False
-            
-    def get_key_byte(self):
-        """Get a single raw key byte using SPI write_readinto"""
-        if not (self.mode == 'spi' and isinstance(self.interface, machine.SPI) and self.cs is not None):
-            return None
-            
-        key_byte = None
-        try:
-            if self.key_buffer:
-                return self.key_buffer.pop(0)
-                
-            # --- Perform SPI transaction --- 
-            # Prepare buffer to write (send 0x00 as poll/dummy byte)
-            spi_write_buf[0] = 0x00 
-            # Prepare buffer to read into
-            spi_read_buf[0] = 0xFF # Default to idle
-
-            self.cs.value(0) # Select
-            time.sleep(0.001)
-            # Simultaneously write poll_cmd and read response into read_buf
-            self.interface.write_readinto(spi_write_buf, spi_read_buf)
-            time.sleep(0.001)
-            self.cs.value(1) # Deselect
-            
-            received_byte = spi_read_buf[0]
-            # print(f"DEBUG: SPI read byte: 0x{received_byte:02X}") # Optional debug
-            
-            # Treat 0xFF and 0x00 as "no key" / idle
-            if received_byte != 0xFF and received_byte != 0x00: 
-                key_byte = received_byte
-                
-        except Exception as e_spi_read:
-             print(f"Error reading SPI: {e_spi_read}")
-             # Ensure CS is released on error
-             if self.cs is not None:
-                 self.cs.value(1)
-             key_byte = None # Set to None on error
-            
-        # --- Store and return --- 
-        if key_byte is not None:
-            self.last_key_byte = key_byte
-            return key_byte
-        else:
-            return None # Explicitly return None if no key byte found
-    
-    def scan_keyboard(self):
-        """Scan the keyboard for keypresses and update the key buffer"""
-        key_byte = self.get_key_byte()
-        if key_byte is not None:
-            self.key_buffer.append(key_byte)
-    
-    def has_key(self):
-        """Check if a key is available in the buffer
-        
-        Returns:
-            bool: True if a key is available, False otherwise
+class PicoCalcKeyboard:
+    """
+    Handles communication with the PicoCalc's I2C keyboard (address 0x1F)
+    using MicroPython's machine.I2C.
+    Implements the two-stage read protocol based on C firmware analysis.
+    """
+    def __init__(self, i2c_id=0, sda_pin=4, scl_pin=5, freq=400000, address=PICOCALC_I2C_ADDR):
         """
-        if not self.key_buffer:
-            # Scan for a new key if buffer is empty
-            self.scan_keyboard()
+        Initialize the I2C connection to the keyboard.
+
+        Args:
+            i2c_id (int): The I2C bus ID (0 or 1).
+            sda_pin (int): The GPIO pin number for SDA.
+            scl_pin (int): The GPIO pin number for SCL.
+            freq (int): The I2C frequency (e.g., 100000 or 400000).
+            address (int): The I2C address of the keyboard.
+        """
+        self.i2c_id = i2c_id
+        self.address = address
+        self.bus = None
+        self.ctrl_held = False
+        self.key_buffer = [] # Simple list buffer
+        self.last_raw_status = None # For debugging
+
+        try:
+            self.sda = machine.Pin(sda_pin)
+            self.scl = machine.Pin(scl_pin)
+            self.bus = machine.I2C(i2c_id, sda=self.sda, scl=self.scl, freq=freq)
+            print(f"PicoCalc Keyboard: Initialized machine.I2C({i2c_id}, sda=Pin({sda_pin}), scl=Pin({scl_pin})) for address 0x{self.address:02X}")
+            # Optional: Scan to check if device is present?
+            # devices = self.bus.scan()
+            # if self.address not in devices:
+            #     print(f"Warning: Device 0x{self.address:02X} not found on I2C bus {i2c_id}")
+
+        except Exception as e:
+            print(f"Error initializing machine.I2C on bus {i2c_id}: {e}")
+            self.bus = None
+            raise # Re-raise the exception
+
+    # No explicit close needed for machine.I2C in this context
+
+    def _write_command(self):
+        """
+        Sends the command byte (0x09) to initiate status read.
+        (Corresponds to CheckI2CKeyboard(..., 0) in C)
+
+        Returns:
+            bool: True on success, False on failure.
+        """
+        if not self.bus:
+            return False
+        try:
+            # Send the single command byte
+            self.bus.writeto(self.address, _CMD_BUF)
+            # print(f"DEBUG: Wrote command 0x{PICOCALC_CMD_READ_STATUS:02X} to 0x{self.address:02X}") # Debug
+            return True
+        except OSError as e:
+            # Common errors: ENODEV (19) if device NACKs or isn't there
+            # print(f"Error writing command to I2C address 0x{self.address:02X}: {e}") # Debug/Verbose Info
+            if e.args[0] == 19: # ENODEV / NACK
+                 pass # Don't spam console if device just isn't there
+            else:
+                 print(f"Error writing I2C command: {e}")
+            return False
+        # except Exception as e: # Catch other potential errors if needed
+        #     print(f"Unexpected error writing I2C command: {e}")
+        #     return False
+
+    def _read_status(self):
+        """
+        Reads the 2-byte status word from the keyboard.
+        (Corresponds to CheckI2CKeyboard(..., 1) in C)
+
+        Returns:
+            int or None: The 16-bit status word, or None on failure.
+            The format is (raw_key_code << 8) | event_type.
+            Returns 0 if the device returns 0 (no event).
+        """
+        if not self.bus:
+            return None
+        try:
+            # Read 2 bytes directly from the device
+            data = self.bus.readfrom(self.address, 2)
+            # print(f"DEBUG: Raw read from 0x{self.address:02X}: {data}") # Debug
+
+            if len(data) == 2:
+                # C code implies MSB is key code, LSB is status/type (0x01 for key press)
+                # Combine bytes: data[0] is MSB, data[1] is LSB
+                status_word = (data[0] << 8) | data[1]
+                return status_word
+            else:
+                # Should not happen with readfrom unless error
+                print(f"Error reading status: Expected 2 bytes, got {len(data)}")
+                return None
+
+        except OSError as e:
+            # print(f"Error reading status from I2C address 0x{self.address:02X}: {e}") # Debug/Verbose info
+            if e.args[0] == 19: # ENODEV / NACK
+                 pass # Don't spam console
+            else:
+                 print(f"Error reading I2C status: {e}")
+            return None
+        # except Exception as e:
+        #     print(f"Unexpected error reading I2C status: {e}")
+        #     return None
+
+    def _translate_raw_code(self, raw_code):
+        """
+        Translates the raw key code (high byte of status) into an internal code.
+        This needs to replicate the C code's switch statement.
+
+        Args:
+            raw_code (int): The 8-bit raw key code.
+
+        Returns:
+            int: The translated key code (e.g., ASCII or special constant).
+                 Returns the raw_code itself if no translation exists.
+        """
+        # This map translates the 8-bit raw key identifier from the I2C keyboard
+        # (high byte of the status word) into MMBasic internal key codes.
+        # Derived from the switch statement in CheckI2CKeyboard in I2C.c
+        c_intermediate_map = {
+            0xb1: ESC,    # Raw code -> MMBasic ESC (27)
+            0x81: F1,     # Raw code -> MMBasic F1 (138)
+            0x82: F2,     # Raw code -> MMBasic F2 (139)
+            0x83: F3,     # Raw code -> MMBasic F3 (140)
+            0x84: F4,     # Raw code -> MMBasic F4 (141)
+            0x85: F5,     # Raw code -> MMBasic F5 (142)
+            0x86: F6,     # Raw code -> MMBasic F6 (143)
+            0x87: F7,     # Raw code -> MMBasic F7 (144)
+            0x88: F8,     # Raw code -> MMBasic F8 (145)
+            0x89: F9,     # Raw code -> MMBasic F9 (146)
+            0x90: F10,    # Raw code -> MMBasic F10 (147)
+            0xb5: UP,     # Raw code -> MMBasic UP (128)
+            0xb6: DOWN,   # Raw code -> MMBasic DOWN (130)
+            0xb7: RIGHT,  # Raw code -> MMBasic RIGHT (129)
+            0xb4: LEFT,   # Raw code -> MMBasic LEFT (131)
+            0xd0: BreakKey,# Raw code -> MMBasic BreakKey (3)
+            0xd1: INSERT, # Raw code -> MMBasic INSERT (132)
+            0xd2: HOME,   # Raw code -> MMBasic HOME (134)
+            0xd5: END,    # Raw code -> MMBasic END (135)
+            0xd6: PUP,    # Raw code -> MMBasic PUP (136)
+            0xd7: PDOWN,  # Raw code -> MMBasic PDOWN (137)
+            # Raw ASCII codes (like 'a', '1', etc.) are passed through by default
+        }
+
+        # The C code's default case passes the raw code through if not matched.
+        # .get(raw_code, raw_code) achieves the same here.
+        return c_intermediate_map.get(raw_code, raw_code)
+
+    def _decode_and_buffer(self, status):
+        """
+        Decodes the 16-bit status word and buffers valid keypresses.
+        Updates the `ctrl_held` state.
+
+        Args:
+            status (int): The 16-bit status word (or None).
+        """
+        if status is None: # Communication error
+            return
+        if status == 0: # No key event
+             return
+
+        self.last_raw_status = status # Store for debugging
+
+        # Check for PicoCalc specific Ctrl codes first
+        if status == 0xA502: # PicoCalc Ctrl pressed
+            self.ctrl_held = True
+            # print("DEBUG: Ctrl Pressed (0xA502)")
+            return
+        elif status == 0xA503: # PicoCalc Ctrl released
+            self.ctrl_held = False
+            # print("DEBUG: Ctrl Released (0xA503)")
+            return
+        # Check for alternate Ctrl codes (non-PicoCalc build?)
+        elif status == 0x7E02: # Standard Ctrl pressed
+            self.ctrl_held = True
+            # print("DEBUG: Ctrl Pressed (0x7E02)")
+            return
+        elif status == 0x7E03: # Standard Ctrl released
+            self.ctrl_held = False
+            # print("DEBUG: Ctrl Released (0x7E03)")
+            return
+
+        # Check if it's a key press event (LSB == 1)
+        event_type = status & 0xFF
+        if event_type == 1:
+            raw_key_code = status >> 8
+            # print(f"DEBUG: Key Press Event: Raw Code=0x{raw_key_code:02X}")
+
+            # Translate raw code to intermediate code
+            c = self._translate_raw_code(raw_key_code)
+            # print(f"DEBUG: Translated Code=0x{c:02X} ({chr(c) if 32<=c<=126 else '.'})")
+
+            # Apply Ctrl modifier ONLY to lowercase letters
+            if self.ctrl_held and isinstance(c, int) and ord('a') <= c <= ord('z'):
+                final_code = c - ord('a') + 1
+                # print(f"DEBUG: Applied Ctrl: 0x{final_code:02X}")
+            else:
+                final_code = c
+
+            # Handle Break Key (Ctrl+C -> ASCII 3)
+            if final_code == BreakKey:
+                # How to signal MMAbort in Python? Raise an exception? Set a flag?
+                # For now, just buffer it like any other key.
+                # Or maybe have a specific callback or flag. Let's buffer it.
+                # MMAbort = True # Can't set global like this easily
+                print("Break key (Ctrl+C) detected!")
+                # C code clears buffer, maybe do that here?
+                self.key_buffer.clear() # Clear buffer on break
+
+            # Buffer the final key code
+            if final_code is not None:
+                self.key_buffer.append(final_code)
+                # print(f"DEBUG: Buffered key: 0x{final_code:02X}")
+        # else: # Other event types? LSB != 1 and not Ctrl code
+            # print(f"DEBUG: Unknown event type: Status=0x{status:04X}")
+
+    def scan_keyboard(self):
+        """
+        Performs the two-stage poll (write command, read status)
+        and processes the result. Should be called periodically.
+        """
+        if not self.bus:
+            # print("Warning: scan_keyboard called but I2C bus not initialized.")
+            return
+
+        # Stage 1: Write command
+        if not self._write_command():
+            # Failed to write command, maybe device disconnected?
+            # Consider adding a delay or retry mechanism?
+            # print("DEBUG: Failed to write command in scan_keyboard") # Debug
+            time.sleep(0.01) # Small delay before next attempt
+            return # Skip reading status if write failed
+
+        # Short delay between write and read? The C code doesn't show one here,
+        # but sometimes needed. Let's add a minimal one.
+        # time.sleep(0.001) # 1ms
+
+        # Stage 2: Read status
+        status = self._read_status()
+
+        # Stage 3: Decode and buffer
+        if status is not None:
+            self._decode_and_buffer(status)
+        # else:
+            # print("DEBUG: Failed to read status in scan_keyboard") # Debug
+
+    def has_key(self):
+        """
+        Check if a key code is available in the buffer.
+
+        Returns:
+            bool: True if a key is available, False otherwise.
+        """
         return len(self.key_buffer) > 0
 
     def get_key(self):
-        """Get the next available key byte from the buffer.
-           Scans if the buffer is empty.
-        
-        Returns:
-            int or None: Key byte or None if buffer is empty after scanning.
         """
-        if not self.key_buffer:
-            self.scan_keyboard() # Fill buffer if empty
-            
+        Get the next available key code from the buffer.
+
+        Returns:
+            int or None: Key code (ASCII or special value) or None if buffer is empty.
+        """
         if self.key_buffer:
             return self.key_buffer.pop(0)
         else:
             return None
-            
+
     def test(self):
-        """Run a simple test loop to check keyboard functionality"""
-        print(f"Keyboard test started (mode: {self.mode})")
-        print("Press keys on the keyboard (Ctrl+C to exit)...")
-        print("Will print raw byte codes detected (excluding 0xFF and 0x00).")
-        
+        """
+        Run a simple test loop to check keyboard functionality.
+        Scans periodically and prints detected keys.
+        """
+        if not self.bus:
+            print("Cannot run test: I2C bus not initialized.")
+            return
+
+        print(f"PicoCalc Keyboard Test (Bus: {self.i2c_id}, Addr: 0x{self.address:02X})")
+        print("Polling keyboard... Press keys (Ctrl+C on *this* terminal to exit test).")
+        print("Outputs: Raw Status | Decoded Key (Hex) | Ctrl Held?")
+
         try:
             while True:
-                key_byte = self.get_key() # Use the buffered get_key
-                if key_byte is not None:
-                    # Print the raw byte value in hex format
-                    print(f"Key byte pressed: 0x{key_byte:02X}")
-                # Add a small delay to prevent busy-looping and reduce noise
-                time.sleep(0.05) 
+                self.scan_keyboard() # Poll the keyboard
+
+                key = self.get_key() # Check buffer
+                if key is not None:
+                     char_repr = chr(key) if 32 <= key <= 126 else '.'
+                     print(f"Status: 0x{self.last_raw_status:04X} -> Key: 0x{key:02X} ('{char_repr}') Ctrl: {self.ctrl_held}")
+
+                # Prevent busy-looping, C firmware implies periodic checks
+                time.sleep(0.02) # Poll roughly 50 times/sec
+
         except KeyboardInterrupt:
-            print("\nTest stopped by user")
+            print("Test stopped by user.")
         except Exception as e:
-             print(f"\nError during test loop: {e}")
+            print(f"Error during test loop: {e}")
+        finally:
+            # Ensure the bus is closed if the test created the instance
+            # self.close() # Let the caller manage closing
+            pass
 
-# Default keyboard instance
-_keyboard_instance: KeyboardController | None = None
+# --- Optional: Module-level functions for singleton-like access ---
 
-def init(mode='spi', force_reinit=False): # Forcing SPI mode here
-    """Initialize the keyboard controller (singleton pattern)
-    
-    Args:
-        mode (str): Communication mode to use (forced to 'spi')
-        force_reinit (bool): If True, force reinitialization even if already initialized.
-    
-    Returns:
-        KeyboardController or None: The initialized keyboard controller or None on failure
-    """
+_keyboard_instance: PicoCalcKeyboard | None = None
+
+def init(i2c_id=0, sda_pin=4, scl_pin=5, freq=400000, force_reinit=False):
+    """Initialize the global keyboard instance."""
     global _keyboard_instance
-    # Force SPI mode for this focused test
-    mode = 'spi' 
-    
     if _keyboard_instance is None or force_reinit:
-        print(f"Initializing keyboard (Mode: {mode}, Force: {force_reinit})...")
+        # No explicit close needed for machine.I2C
+        _keyboard_instance = None # Clear previous instance if forcing reinit
         try:
-            _keyboard_instance = KeyboardController(mode)
-            if _keyboard_instance.mode == 'failed':
-                 print("Keyboard initialization failed (mode set to 'failed').")
-                 _keyboard_instance = None
+            _keyboard_instance = PicoCalcKeyboard(i2c_id=i2c_id, sda_pin=sda_pin, scl_pin=scl_pin, freq=freq)
         except Exception as e:
-            print(f"Keyboard initialization failed with exception: {e}")
-            _keyboard_instance = None # Ensure it's None on failure
-            
+            print(f"Failed to initialize PicoCalcKeyboard: {e}")
+            _keyboard_instance = None
     return _keyboard_instance
 
-def get_key():
-    """Get the next key byte from the keyboard buffer
-    
-    Returns:
-        int or None: The key byte pressed, or None if no key is pressed/error
-    """
-    global _keyboard_instance
-    if _keyboard_instance is None:
-        if init() is None:
-             return None
-             
-    if _keyboard_instance is None:
-        print("Error: Keyboard object not available after init attempt.")
-        return None
-        
-    try:
+def get_key_module():
+    """Get a key using the global instance, requires periodic scanning elsewhere."""
+    if _keyboard_instance:
         return _keyboard_instance.get_key()
-    except Exception as e:
-        print(f"Error during get_key: {e}")
-        return None
+    return None
 
-def has_key():
-    """Check if a key is available
-    
-    Returns:
-        bool: True if a key is available, False otherwise
-    """
-    global _keyboard_instance
-    if _keyboard_instance is None:
-        if init() is None:
-            return False
-            
-    if _keyboard_instance is None:
-        print("Error: Keyboard object not available after init attempt.")
-        return False
-        
-    try:
-        return _keyboard_instance.has_key()
-    except Exception as e:
-        print(f"Error during has_key: {e}")
-        return False
+def has_key_module():
+     """Check for key using the global instance, requires periodic scanning elsewhere."""
+     if _keyboard_instance:
+         return _keyboard_instance.has_key()
+     return False
 
-def test():
-    """Run a keyboard test (forces SPI mode)"""
-    global _keyboard_instance
-    # Always try to initialize before testing, forcing SPI
-    instance = init(mode='spi') 
-    if instance:
-        try:
-            instance.test()
-        except Exception as e:
-             print(f"Error during test: {e}")
-    else:
-        print("Cannot run test: Keyboard initialization failed.")
+def scan_keyboard_module():
+     """Scan using the global instance."""
+     if _keyboard_instance:
+         _keyboard_instance.scan_keyboard()
 
+def test_module(i2c_id=0, sda_pin=4, scl_pin=5, freq=400000):
+     """Run test using a temporary instance."""
+     kbd = None
+     try:
+         kbd = PicoCalcKeyboard(i2c_id=i2c_id, sda_pin=sda_pin, scl_pin=scl_pin, freq=freq)
+         kbd.test()
+     except Exception as e:
+         print(f"Failed to run test: {e}")
+     # No finally block needed to close kbd
+
+# Example Usage (if run directly)
 if __name__ == "__main__":
-    # Run test in SPI mode
-    test() 
+    print("Running PicoCalc Keyboard Test (MicroPython)...")
+    # Default Configuration for PicoCalc Keyboard
+    I2C_BUS_ID = 0
+    SDA_PIN = 4
+    SCL_PIN = 5
+    I2C_FREQ = 400000 # 400 kHz
+
+    print(f"Attempting to use I2C bus {I2C_BUS_ID} (SDA: GP{SDA_PIN}, SCL: GP{SCL_PIN})")
+    print("Ensure the keyboard is connected and powered.")
+
+    # Use the module-level test function
+    test_module(i2c_id=I2C_BUS_ID, sda_pin=SDA_PIN, scl_pin=SCL_PIN, freq=I2C_FREQ)
+
+    # --- Alternative direct instantiation ---
+    # keyboard = None
+    # try:
+    #     keyboard = PicoCalcKeyboard(i2c_id=I2C_BUS_ID, sda_pin=SDA_PIN, scl_pin=SCL_PIN)
+    #     keyboard.test()
+    # except Exception as e:
+    #     print(f"Error: {e}")
+    # No finally needed 

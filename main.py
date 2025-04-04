@@ -3,8 +3,11 @@
 import time
 from ili9488 import Display # Import the Display class
 import graphics           # Import the graphics module
-import font               # Import font dimensions
+import font               # Import font definitions/dimensions
 import keyboard          # Import the new PicoCalc keyboard driver
+
+# Import constants from graphics
+from graphics import SCREEN_CHAR_WIDTH, SCREEN_CHAR_HEIGHT, CHAR_WIDTH_PX, CHAR_HEIGHT_PX, clear_rect
 
 # --- Display Configuration ---
 LCD_CS_PIN = 13   # Chip Select
@@ -49,95 +52,170 @@ kbd = keyboard.init()  # This uses the default settings from keyboard.py
 print("--- Initializing Shell ---")
 
 # --- Shell Configuration & State ---
-TERM_COLS = display.width // font.FONT_WIDTH
-TERM_ROWS = display.height // font.FONT_HEIGHT
-line_buffer = ""
+# Screen buffer: List of lists (rows of characters)
+screen_buffer = [[' ' for _ in range(SCREEN_CHAR_WIDTH)] for _ in range(SCREEN_CHAR_HEIGHT)]
 cursor_col = 0
 cursor_row = 0
 PROMPT = "> " # Define the prompt string
+# line_buffer and current_prompt_row are no longer needed
 
-# Clear the screen initially
+def redraw_screen(display, buffer, c_col, c_row):
+    """Redraws the entire screen from the buffer, placing cursor.
+    NOTE: Full redraw can be slow, optimizations are possible.
+    """
+    for r in range(SCREEN_CHAR_HEIGHT):
+        for c in range(SCREEN_CHAR_WIDTH):
+            char = buffer[r][c]
+            fg = COLOR_WHITE
+            bg = COLOR_BLACK
+            # Invert colors for cursor position
+            if r == c_row and c == c_col:
+                fg = COLOR_BLACK
+                bg = COLOR_WHITE
+            
+            graphics.draw_char(display, char, 
+                               c * CHAR_WIDTH_PX, 
+                               r * CHAR_HEIGHT_PX, 
+                               fg, bg)
+
+# Clear the physical screen initially
 graphics.clear_screen(display, COLOR_BLACK)
 
-# Draw the initial prompt
-graphics.draw_string(display, PROMPT, 
-                     cursor_col * font.FONT_WIDTH, 
-                     cursor_row * font.FONT_HEIGHT, 
-                     COLOR_WHITE, COLOR_BLACK)
-cursor_col = len(PROMPT) # Update cursor position after drawing prompt
+# Initialize buffer (already done with spaces)
+# Draw the initial prompt into the buffer
+for i, char in enumerate(PROMPT):
+    if i < SCREEN_CHAR_WIDTH:
+        screen_buffer[cursor_row][i] = char
+cursor_col = len(PROMPT) # Update cursor position after prompt
 
-print(f"Terminal Size: {TERM_COLS}x{TERM_ROWS}")
+# Initial screen draw from buffer
+redraw_screen(display, screen_buffer, cursor_col, cursor_row)
+
+print(f"Terminal Size: {SCREEN_CHAR_WIDTH}x{SCREEN_CHAR_HEIGHT}")
 print("Shell initialized. Waiting for input...")
 
 # Define the valid Enter key codes (CR/LF is all we need now with corrected key handling)
 ENTER_KEY_CODES = [13]  # CR only since we standardized on CR in keyboard.py
+# Arrow key codes from keyboard reverse engineering
+ARROW_UP = 0xB5
+ARROW_DOWN = 0xB6
+ARROW_LEFT = 0xB4 # Define if needed later
+ARROW_RIGHT = 0xB7 # Define if needed later
+BACKSPACE_KEYS = [8, 133] # ASCII BS and DEL
 
 def handle_key(key_code):
-    """Handle a key code from the keyboard"""
-    global line_buffer, cursor_col, cursor_row
-    
-    # Debug output for all key presses if DEBUG_MODE is on
+    """Handle a key code from the keyboard using screen buffer"""
+    global cursor_col, cursor_row # screen_buffer is global implicitly
+    redraw_needed = False
+
+    # --- Debug --- 
     if DEBUG_MODE:
         key_name = "Unknown"
-        if 32 <= key_code <= 126:
-            key_name = f"'{chr(key_code)}'"
-        elif key_code == 8 or key_code == 133:
-            key_name = "Backspace"
-        elif key_code in ENTER_KEY_CODES:
-            key_name = "Enter"
-        
+        if 32 <= key_code <= 126: key_name = f"'{chr(key_code)}'"
+        elif key_code in BACKSPACE_KEYS: key_name = "Backspace"
+        elif key_code in ENTER_KEY_CODES: key_name = "Enter"
+        elif key_code == ARROW_UP: key_name = "Up Arrow"
+        elif key_code == ARROW_DOWN: key_name = "Down Arrow"
         status = kbd.last_raw_status if kbd else None
         status_str = f"0x{status:04X}" if status is not None else "None"
-        print(f"DEBUG: Key detected - Code: 0x{key_code:02X} ({key_code}) Name: {key_name} Raw Status: {status_str}")
-    
-    # Convert key code to character if it's a printable ASCII code
-    if 32 <= key_code <= 126:  # Printable ASCII range
-        if cursor_col < TERM_COLS:
-            char = chr(key_code)
-            # Draw the character on the display
-            graphics.draw_char(display, char, 
-                              cursor_col * font.FONT_WIDTH, 
-                              cursor_row * font.FONT_HEIGHT, 
-                              COLOR_WHITE, COLOR_BLACK)
-            # Add character to buffer
-            line_buffer += char
-            # Advance cursor
-            cursor_col += 1
-            # Print the character (simple output mode)
-            if not DEBUG_MODE:
-                print(f"Key: '{char}'", end=" ")
-            
-    elif key_code == 133 or key_code == 8:  # Backspace (DEL=133 or ASCII backspace=8)
-        if cursor_col > len(PROMPT):  # Only allow backspace after the prompt
-            # Move cursor back
+        print(f"DEBUG: Key: 0x{key_code:02X}, Name: {key_name}, Raw: {status_str}, Cursor: ({cursor_col},{cursor_row})")
+
+    # --- Printable Characters --- 
+    if 32 <= key_code <= 126:
+        char = chr(key_code)
+        screen_buffer[cursor_row][cursor_col] = char
+        cursor_col += 1
+        # Handle line wrap
+        if cursor_col >= SCREEN_CHAR_WIDTH:
+            cursor_col = 0
+            cursor_row += 1
+            # Handle screen scroll
+            if cursor_row >= SCREEN_CHAR_HEIGHT:
+                # Scroll buffer content up
+                screen_buffer.pop(0) # Remove top line
+                screen_buffer.append([' ' for _ in range(SCREEN_CHAR_WIDTH)]) # Add blank line at bottom
+                cursor_row = SCREEN_CHAR_HEIGHT - 1 # Keep cursor on last line
+        redraw_needed = True
+
+    # --- Backspace --- 
+    elif key_code in BACKSPACE_KEYS:
+        original_cursor_col = cursor_col
+        original_cursor_row = cursor_row
+        
+        # Decide where the cursor *should* move back to
+        if cursor_col > 0:
             cursor_col -= 1
-            # Draw a space to overwrite the character on screen
-            graphics.draw_char(display, ' ', 
-                              cursor_col * font.FONT_WIDTH, 
-                              cursor_row * font.FONT_HEIGHT, 
-                              COLOR_WHITE, COLOR_BLACK)
-            # Remove character from buffer
-            line_buffer = line_buffer[:-1]
-            if not DEBUG_MODE:
-                print("Backspace", end=" ")
+        elif cursor_row > 0:
+            # Move to end of previous line
+            cursor_row -= 1
+            cursor_col = SCREEN_CHAR_WIDTH - 1
+            # Skip back over any trailing spaces on the previous line (optional refinement)
+            while cursor_col > 0 and screen_buffer[cursor_row][cursor_col] == ' ':
+                 cursor_col -= 1
+            # If we landed on a space, move one more so backspace clears it
+            # Or handle case where entire previous line was spaces - land at col 0
+            if screen_buffer[cursor_row][cursor_col] == ' ' and cursor_col < SCREEN_CHAR_WIDTH - 1:
+                 pass # Landed on the last non-space char or col 0
+            elif cursor_col < SCREEN_CHAR_WIDTH - 1:
+                cursor_col += 1 # If last char wasn't space, cursor goes after it
+        
+        # Check if the target position is part of the prompt on the first line
+        is_prompt_area = (cursor_row == 0 and cursor_col < len(PROMPT))
+
+        # Only erase if we actually moved and it's not the prompt area
+        if (cursor_col != original_cursor_col or cursor_row != original_cursor_row) and not is_prompt_area:
+            screen_buffer[cursor_row][cursor_col] = ' ' # Erase character in buffer
+            redraw_needed = True
+        else: # Didn't move or tried to delete prompt, revert cursor position
+            cursor_col = original_cursor_col
+            cursor_row = original_cursor_row
             
-    elif key_code in ENTER_KEY_CODES:  # Enter (standardized on CR=13)
-        # Process the command 
-        print(f"\nCommand: {line_buffer}")
+    # --- Enter --- 
+    elif key_code in ENTER_KEY_CODES:
+        # Extract command from current line (excluding prompt if on row 0)
+        start_col = len(PROMPT) if cursor_row == 0 else 0
+        # Command needs to be extracted *before* scrolling
+        # Find current line based on cursor_row before potential modification
+        command = "".join(screen_buffer[cursor_row][start_col:]).rstrip()
+        print(f"\nCommand: {command}") # Process the command here
+
+        # Scroll buffer content up
+        screen_buffer.pop(0)
+        screen_buffer.append([' ' for _ in range(SCREEN_CHAR_WIDTH)])
+        # Always place cursor at start of new bottom line after Enter
+        cursor_row = SCREEN_CHAR_HEIGHT - 1 
+        cursor_col = 0
         
-        # Clear line and advance cursor
-        line_buffer = ""  # Clear the buffer
-        cursor_row = (cursor_row + 1) % TERM_ROWS  # Wrap around if needed
-        cursor_col = 0  # Reset to start of line
+        # Draw prompt on the new line in the buffer
+        for i, char in enumerate(PROMPT):
+            if i < SCREEN_CHAR_WIDTH:
+                screen_buffer[cursor_row][i] = char
+        cursor_col = len(PROMPT) # Position cursor after prompt
+        redraw_needed = True
         
-        # Draw new prompt
-        graphics.draw_string(display, PROMPT, 
-                            cursor_col * font.FONT_WIDTH, 
-                            cursor_row * font.FONT_HEIGHT, 
-                            COLOR_WHITE, COLOR_BLACK)
-        cursor_col = len(PROMPT)
-        if not DEBUG_MODE:
-            print("Enter pressed")
+    # --- Arrow Up --- 
+    elif key_code == ARROW_UP:
+        if cursor_row > 0:
+            cursor_row -= 1
+            # Optional: Adjust cursor_col if new line is shorter?
+            # current_line_len = len("".join(screen_buffer[cursor_row]).rstrip())
+            # if cursor_col >= current_line_len:
+            #     cursor_col = current_line_len
+            redraw_needed = True
+            
+    # --- Arrow Down --- 
+    elif key_code == ARROW_DOWN:
+        if cursor_row < SCREEN_CHAR_HEIGHT - 1:
+            cursor_row += 1
+            # Optional: Adjust cursor_col if new line is shorter?
+            # current_line_len = len("".join(screen_buffer[cursor_row]).rstrip())
+            # if cursor_col >= current_line_len:
+            #     cursor_col = current_line_len
+            redraw_needed = True
+
+    # Redraw the screen if anything changed
+    if redraw_needed:
+        redraw_screen(display, screen_buffer, cursor_col, cursor_row)
 
 # Main loop
 try:

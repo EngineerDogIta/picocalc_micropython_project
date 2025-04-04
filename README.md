@@ -94,6 +94,13 @@ Once the firmware is running:
 4. [x] Implement proper communication with the keyboard controller via I2C
 5. [x] Integrate components into `main.py` to create the interactive shell loop
 6. [ ] Add basic scrolling or line wrapping
+   - **Specification:**
+     - The display supports 40 characters per line and 40 lines.
+     - When text input reaches the 41st character on a line, the cursor should automatically wrap to the beginning of the next line.
+     - When text input reaches the 41st line (i.e., attempting to draw on the line after the last visible line), the entire screen content should scroll up by one line height.
+     - The oldest line at the top will be discarded.
+     - The new line of text will appear on the newly cleared bottom line.
+     - Backspace should correctly handle moving the cursor up to the end of the previous line if deleting the first character of a wrapped line.
 7. [ ] Implement command processing functions
 
 ## Contributing

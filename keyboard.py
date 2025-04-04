@@ -47,15 +47,15 @@ class PicoCalcKeyboard:
     using MicroPython's machine.I2C.
     Implements the two-stage read protocol based on C firmware analysis.
     """
-    def __init__(self, i2c_id=0, sda_pin=4, scl_pin=5, freq=400000, address=PICOCALC_I2C_ADDR):
+    def __init__(self, i2c_id=1, sda_pin=6, scl_pin=7, freq=100000, address=PICOCALC_I2C_ADDR):
         """
         Initialize the I2C connection to the keyboard.
 
         Args:
-            i2c_id (int): The I2C bus ID (0 or 1).
-            sda_pin (int): The GPIO pin number for SDA.
-            scl_pin (int): The GPIO pin number for SCL.
-            freq (int): The I2C frequency (e.g., 100000 or 400000).
+            i2c_id (int): The I2C bus ID (0 or 1). Defaults to 1.
+            sda_pin (int): The GPIO pin number for SDA. Defaults to 6.
+            scl_pin (int): The GPIO pin number for SCL. Defaults to 7.
+            freq (int): The I2C frequency (default 100kHz).
             address (int): The I2C address of the keyboard.
         """
         self.i2c_id = i2c_id
@@ -66,17 +66,21 @@ class PicoCalcKeyboard:
         self.last_raw_status = None # For debugging
 
         try:
-            self.sda = machine.Pin(sda_pin)
-            self.scl = machine.Pin(scl_pin)
+            # Explicitly define pins with pull-ups using passed pin numbers
+            self.sda = machine.Pin(sda_pin, machine.Pin.IN, machine.Pin.PULL_UP)
+            self.scl = machine.Pin(scl_pin, machine.Pin.IN, machine.Pin.PULL_UP)
+            # Initialize with explicit frequency using passed arguments
             self.bus = machine.I2C(i2c_id, sda=self.sda, scl=self.scl, freq=freq)
-            print(f"PicoCalc Keyboard: Initialized machine.I2C({i2c_id}, sda=Pin({sda_pin}), scl=Pin({scl_pin})) for address 0x{self.address:02X}")
+            print(f"PicoCalc Keyboard: Initialized machine.I2C({i2c_id}, sda=Pin({sda_pin}, PULL_UP), scl=Pin({scl_pin}, PULL_UP), freq={freq}) for address 0x{self.address:02X}")
+
             # Optional: Scan to check if device is present?
-            # devices = self.bus.scan()
-            # if self.address not in devices:
-            #     print(f"Warning: Device 0x{self.address:02X} not found on I2C bus {i2c_id}")
+            devices = self.bus.scan()
+            print("Found I2C devices:", [hex(d) for d in devices]) # Print found devices
+            if self.address not in devices:
+                print(f"Warning: Device 0x{self.address:02X} not found on I2C bus {self.i2c_id}")
 
         except Exception as e:
-            print(f"Error initializing machine.I2C on bus {i2c_id}: {e}")
+            print(f"Error initializing machine.I2C on bus {self.i2c_id}: {e}")
             self.bus = None
             raise # Re-raise the exception
 
@@ -225,10 +229,11 @@ class PicoCalcKeyboard:
             # print("DEBUG: Ctrl Released (0x7E03)")
             return
 
-        # Check if it's a key press event (LSB == 1)
-        event_type = status & 0xFF
-        if event_type == 1:
-            raw_key_code = status >> 8
+        # Check if it's a key press event (HIGH BYTE == 1)
+        event_type = status >> 8 # Use HIGH byte for event type
+        
+        if event_type == 1: # Key PRESS event
+            raw_key_code = status & 0xFF # Use LOW byte for raw key code
             # print(f"DEBUG: Key Press Event: Raw Code=0x{raw_key_code:02X}")
 
             # Translate raw code to intermediate code
@@ -256,6 +261,23 @@ class PicoCalcKeyboard:
             if final_code is not None:
                 self.key_buffer.append(final_code)
                 # print(f"DEBUG: Buffered key: 0x{final_code:02X}")
+        elif event_type == 2: # Key REPEAT event?
+            # Optional: Handle repeat like a press? Or ignore?
+            # For now, let's buffer repeats too, like presses
+            raw_key_code = status & 0xFF # Use LOW byte for raw key code
+            c = self._translate_raw_code(raw_key_code)
+            if self.ctrl_held and isinstance(c, int) and ord('a') <= c <= ord('z'):
+                final_code = c - ord('a') + 1
+            else:
+                final_code = c
+            if final_code is not None:
+                 self.key_buffer.append(final_code)
+            # print(f"DEBUG: Key Repeat Event: Raw Code=0x{raw_key_code:02X}, Buffered as 0x{final_code:02X}")
+            pass 
+        elif event_type == 3: # Key RELEASE event
+            # print(f"DEBUG: Key Release Event: Raw Code=0x{status & 0xFF:02X}")
+            # We generally don't buffer key releases, but could add logic here if needed.
+            pass
         # else: # Other event types? LSB != 1 and not Ctrl code
             # print(f"DEBUG: Unknown event type: Status=0x{status:04X}")
 
@@ -271,17 +293,23 @@ class PicoCalcKeyboard:
         # Stage 1: Write command
         if not self._write_command():
             # Failed to write command, maybe device disconnected?
-            # Consider adding a delay or retry mechanism?
             # print("DEBUG: Failed to write command in scan_keyboard") # Debug
             time.sleep(0.01) # Small delay before next attempt
             return # Skip reading status if write failed
 
-        # Short delay between write and read? The C code doesn't show one here,
-        # but sometimes needed. Let's add a minimal one.
-        # time.sleep(0.001) # 1ms
+        # Short delay between write and read? Needed by some I2C devices.
+        time.sleep_ms(1) # 1 millisecond delay
 
         # Stage 2: Read status
         status = self._read_status()
+
+        # --- DEBUG: Print raw status --- 
+        if status is not None: 
+            # print(f"DEBUG: Received Status = 0x{status:04X}")
+            pass
+        else:
+            print("DEBUG: Received Status = None")
+        # --- END DEBUG ---
 
         # Stage 3: Decode and buffer
         if status is not None:
@@ -348,7 +376,7 @@ class PicoCalcKeyboard:
 
 _keyboard_instance: PicoCalcKeyboard | None = None
 
-def init(i2c_id=0, sda_pin=4, scl_pin=5, freq=400000, force_reinit=False):
+def init(i2c_id=1, sda_pin=6, scl_pin=7, freq=100000, force_reinit=False):
     """Initialize the global keyboard instance."""
     global _keyboard_instance
     if _keyboard_instance is None or force_reinit:
@@ -378,7 +406,7 @@ def scan_keyboard_module():
      if _keyboard_instance:
          _keyboard_instance.scan_keyboard()
 
-def test_module(i2c_id=0, sda_pin=4, scl_pin=5, freq=400000):
+def test_module(i2c_id=1, sda_pin=6, scl_pin=7, freq=100000):
      """Run test using a temporary instance."""
      kbd = None
      try:
@@ -391,22 +419,22 @@ def test_module(i2c_id=0, sda_pin=4, scl_pin=5, freq=400000):
 # Example Usage (if run directly)
 if __name__ == "__main__":
     print("Running PicoCalc Keyboard Test (MicroPython)...")
-    # Default Configuration for PicoCalc Keyboard
-    I2C_BUS_ID = 0
-    SDA_PIN = 4
-    SCL_PIN = 5
-    I2C_FREQ = 400000 # 400 kHz
+    # Use the new default settings based on schematic analysis
+    # I2C_BUS_ID = 1
+    # SDA_PIN = 6
+    # SCL_PIN = 7
+    # I2C_FREQ = 400000 # Changed back to 100000
 
-    print(f"Attempting to use I2C bus {I2C_BUS_ID} (SDA: GP{SDA_PIN}, SCL: GP{SCL_PIN})")
+    print(f"Attempting to use default I2C settings (I2C1, SDA: GP6, SCL: GP7, Freq: 100kHz)") # Updated frequency in print
     print("Ensure the keyboard is connected and powered.")
 
-    # Use the module-level test function
-    test_module(i2c_id=I2C_BUS_ID, sda_pin=SDA_PIN, scl_pin=SCL_PIN, freq=I2C_FREQ)
+    # Use the module-level test function, which now uses the correct defaults
+    test_module()
 
-    # --- Alternative direct instantiation ---
+    # --- Alternative direct instantiation (also uses new defaults) ---
     # keyboard = None
     # try:
-    #     keyboard = PicoCalcKeyboard(i2c_id=I2C_BUS_ID, sda_pin=SDA_PIN, scl_pin=SCL_PIN)
+    #     keyboard = PicoCalcKeyboard(i2c_id=I2C_BUS_ID, sda_pin=SDA_PIN, scl_pin=SCL_PIN, freq=I2C_FREQ)
     #     keyboard.test()
     # except Exception as e:
     #     print(f"Error: {e}")

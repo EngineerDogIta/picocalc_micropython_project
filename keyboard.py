@@ -188,8 +188,18 @@ class PicoCalcKeyboard:
             0xd5: END,    # Raw code -> MMBasic END (135)
             0xd6: PUP,    # Raw code -> MMBasic PUP (136)
             0xd7: PDOWN,  # Raw code -> MMBasic PDOWN (137)
+            0x5A: 13,     # ENTER key (CR) - Raw code might be 0x5A for Enter
+            0x0D: 13,     # Alternative ENTER key code
+            0x01: 13,     # Enter key (first press, as observed in debug output)
+            0x03: 13,     # Enter key (second press, as observed in debug output)
             # Raw ASCII codes (like 'a', '1', etc.) are passed through by default
         }
+
+        # Special case for Enter key with type 0x0A
+        if raw_code in [0x01, 0x03] and hasattr(self, 'last_raw_status') and self.last_raw_status is not None:
+            status_type = self.last_raw_status & 0xFF
+            if status_type == 0x0A:  # Type is Line Feed (LF)
+                return 13  # Return CR (Carriage Return)
 
         # The C code's default case passes the raw code through if not matched.
         # .get(raw_code, raw_code) achieves the same here.
@@ -229,57 +239,68 @@ class PicoCalcKeyboard:
             # print("DEBUG: Ctrl Released (0x7E03)")
             return
 
-        # Check if it's a key press event (HIGH BYTE == 1)
-        event_type = status >> 8 # Use HIGH byte for event type
+        # Extract event type and key code
+        # Based on debugging, we've determined:
+        # - For regular keys: MSB is type (1), LSB is the key code
+        # - For Enter key: Type is in LSB (0x0A), code is in MSB (0x01 or 0x03)
+        event_type = status >> 8  # Use HIGH byte for regular event type
+        raw_key_code = status & 0xFF  # Use LOW byte for regular key code
         
-        if event_type == 1: # Key PRESS event
-            raw_key_code = status & 0xFF # Use LOW byte for raw key code
-            # print(f"DEBUG: Key Press Event: Raw Code=0x{raw_key_code:02X}")
-
-            # Translate raw code to intermediate code
-            c = self._translate_raw_code(raw_key_code)
-            # print(f"DEBUG: Translated Code=0x{c:02X} ({chr(c) if 32<=c<=126 else '.'})")
-
+        # Special handling for Enter key (0x010A or 0x030A)
+        is_enter_key = (raw_key_code == 0x0A and (event_type == 0x01 or event_type == 0x03))
+        
+        # Track last Enter key to avoid duplicates
+        # Only process the first Enter key code (0x01) and ignore the second (0x03)
+        if is_enter_key and event_type == 0x03:
+            print("Ignoring duplicate Enter key")
+            return
+        
+        # Enable this line to debug all key presses in detail
+        print(f"DEBUG RAW KEY: Status=0x{status:04X}, Type=0x{event_type:02X}, Code=0x{raw_key_code:02X}")
+        
+        if event_type == 1 or is_enter_key: # Key PRESS event (regular or Enter)
+            # For Enter key, swap the code and type interpretation
+            if is_enter_key:
+                # Use 13 (CR) as the final code for Enter
+                c = 13
+                print(f"ENTER KEY DETECTED: Raw=0x{event_type:02X}, Type=0x{raw_key_code:02X}, Using CR (13)")
+            else:
+                # Regular key - translate the raw code
+                c = self._translate_raw_code(raw_key_code)
+            
             # Apply Ctrl modifier ONLY to lowercase letters
             if self.ctrl_held and isinstance(c, int) and ord('a') <= c <= ord('z'):
                 final_code = c - ord('a') + 1
-                # print(f"DEBUG: Applied Ctrl: 0x{final_code:02X}")
             else:
                 final_code = c
 
             # Handle Break Key (Ctrl+C -> ASCII 3)
             if final_code == BreakKey:
-                # How to signal MMAbort in Python? Raise an exception? Set a flag?
-                # For now, just buffer it like any other key.
-                # Or maybe have a specific callback or flag. Let's buffer it.
-                # MMAbort = True # Can't set global like this easily
                 print("Break key (Ctrl+C) detected!")
-                # C code clears buffer, maybe do that here?
                 self.key_buffer.clear() # Clear buffer on break
 
             # Buffer the final key code
             if final_code is not None:
                 self.key_buffer.append(final_code)
-                # print(f"DEBUG: Buffered key: 0x{final_code:02X}")
-        elif event_type == 2: # Key REPEAT event?
-            # Optional: Handle repeat like a press? Or ignore?
-            # For now, let's buffer repeats too, like presses
-            raw_key_code = status & 0xFF # Use LOW byte for raw key code
-            c = self._translate_raw_code(raw_key_code)
+                
+        elif event_type == 2: # Key REPEAT event
+            # For now, handle repeats like regular presses
+            if raw_key_code == 0x0A:  # Enter key repeat
+                c = 13  # Use CR
+            else:
+                c = self._translate_raw_code(raw_key_code)
+                
             if self.ctrl_held and isinstance(c, int) and ord('a') <= c <= ord('z'):
                 final_code = c - ord('a') + 1
             else:
                 final_code = c
+                
             if final_code is not None:
-                 self.key_buffer.append(final_code)
-            # print(f"DEBUG: Key Repeat Event: Raw Code=0x{raw_key_code:02X}, Buffered as 0x{final_code:02X}")
-            pass 
+                self.key_buffer.append(final_code)
+                
         elif event_type == 3: # Key RELEASE event
-            # print(f"DEBUG: Key Release Event: Raw Code=0x{status & 0xFF:02X}")
-            # We generally don't buffer key releases, but could add logic here if needed.
+            # We generally don't buffer key releases
             pass
-        # else: # Other event types? LSB != 1 and not Ctrl code
-            # print(f"DEBUG: Unknown event type: Status=0x{status:04X}")
 
     def scan_keyboard(self):
         """
@@ -298,7 +319,8 @@ class PicoCalcKeyboard:
             return # Skip reading status if write failed
 
         # Short delay between write and read? Needed by some I2C devices.
-        time.sleep_ms(1) # 1 millisecond delay
+        # Use time.sleep with milliseconds for MicroPython compatibility
+        time.sleep(0.001) # 1 millisecond delay
 
         # Stage 2: Read status
         status = self._read_status()
